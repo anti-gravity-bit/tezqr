@@ -14,23 +14,45 @@ from tezqr.shared.config import Settings
 def welcome_message() -> str:
     return (
         "Welcome to TezQR.\n\n"
-        "You can use this bot to create clean UPI payment QR codes for your customers.\n\n"
-        "Getting started:\n"
-        "1. Save your UPI ID with /setupi your@upi\n"
-        "2. Generate a payment QR with /pay <amount> <description>\n\n"
-        f"Your free plan includes {FREE_GENERATION_LIMIT} QR generations.\n"
-        f"Upgrade for Rs 99 to unlock {PREMIUM_GENERATION_LIMIT} QR generations."
+        "Create polished UPI payment QRs for your customers directly from Telegram.\n\n"
+        f"Free plan: {FREE_GENERATION_LIMIT} QR generations\n"
+        f"Growth pack: Rs 99 for {PREMIUM_GENERATION_LIMIT} QR generations\n\n"
+        "Quick start:\n"
+        "1. /setupi your@upi\n"
+        "2. /pay 499 Advance payment"
     )
 
 
-def help_message() -> str:
+def help_message(*, is_admin: bool = False) -> str:
+    admin_lines = ""
+    if is_admin:
+        admin_lines = (
+            "\n\nOwner tools:\n"
+            "/stats - view today's merchant activity\n"
+            "/approve <request_code> - activate a paid 1000 QR pack\n"
+            "/broadcast <message> - send an update or offer to all merchants\n"
+            "/upgrade <telegram_id> - manual fallback upgrade"
+        )
     return (
-        "TezQR commands:\n"
-        "/start\n"
-        "/setupi <vpa_id>\n"
-        "/pay <amount> <description>\n\n"
-        "Example:\n"
-        "/pay 499 Website design advance"
+        "TezQR menu\n\n"
+        "Merchant options:\n"
+        "/start - activate your TezQR account\n"
+        "/setupi <vpa_id> - save or update your UPI ID\n"
+        "/pay <amount> <description> - generate a shareable UPI QR\n"
+        "Send your payment screenshot here after buying a pack\n\n"
+        "Examples:\n"
+        "/setupi yourname@upi\n"
+        "/pay 499 Website design advance\n\n"
+        f"Plans:\nFree: {FREE_GENERATION_LIMIT} QRs\n"
+        f"Growth pack: Rs 99 for {PREMIUM_GENERATION_LIMIT} QRs"
+        f"{admin_lines}"
+    )
+
+
+def fallback_menu_message(*, is_admin: bool = False) -> str:
+    return (
+        "I did not recognise that message, but I can help with the options below.\n\n"
+        f"{help_message(is_admin=is_admin)}"
     )
 
 
@@ -72,14 +94,16 @@ def missing_description_message() -> str:
 
 def payment_qr_caption(payment_request: PaymentRequest, bot_public_link: str) -> str:
     return (
+        "TezQR Payment Pass\n\n"
         "Collect Rs "
         f"{payment_request.amount.as_upi_amount()} for {payment_request.description}.\n\n"
-        "Share this QR with your customer. "
-        "They can scan it or pay directly with the UPI link below.\n\n"
-        f"UPI link:\n{payment_request.upi_uri}\n\n"
-        f"Ref: {payment_request.reference.value}\n\n"
-        "Made with TezQR on Telegram.\n"
-        f"Create your own payment QR: {bot_public_link}"
+        "Share this with your customer. They can scan it "
+        "or pay instantly from the UPI link below.\n\n"
+        f"Tap to pay:\n{payment_request.upi_uri}\n\n"
+        f"Reference: {payment_request.reference.value}\n"
+        "Fast checkout. Clean records. Zero confusion.\n\n"
+        "Powered by TezQR on Telegram.\n"
+        f"Make your own payment QR: {bot_public_link}"
     )
 
 
@@ -117,9 +141,10 @@ def paywall_message(
     return "\n".join(lines)
 
 
-def screenshot_received_message() -> str:
+def screenshot_received_message(approval_code: str) -> str:
     return (
         "Payment screenshot received.\n\n"
+        f"Request code: {approval_code}\n"
         "We will verify it shortly and activate your "
         f"{PREMIUM_GENERATION_LIMIT} QR pack once the payment is confirmed."
     )
@@ -139,12 +164,13 @@ def free_plan_still_available_message() -> str:
     )
 
 
-def admin_upgrade_request_message(user: TelegramUser) -> str:
+def admin_upgrade_request_message(user: TelegramUser, approval_code: str) -> str:
     return (
-        "New premium upgrade request received.\n\n"
+        "New pack approval request received.\n\n"
         f"Merchant: {user.display_name}\n"
         f"Telegram ID: {user.telegram_id}\n\n"
-        f"After verifying payment, run:\n/upgrade {user.telegram_id}"
+        f"Request code: {approval_code}\n\n"
+        f"After verifying payment, run:\n/approve {approval_code}"
     )
 
 
@@ -168,10 +194,42 @@ def admin_upgrade_success_message(telegram_id: int) -> str:
     )
 
 
-def merchant_upgrade_confirmation_message() -> str:
+def approve_request_not_found_message(approval_code: str) -> str:
+    return (
+        f"No pending payment request was found for code {approval_code.upper()}.\n"
+        "Check the code and try again."
+    )
+
+
+def admin_approval_success_message(approval_code: str, telegram_id: int) -> str:
+    return (
+        f"Approved {approval_code.upper()} for merchant {telegram_id}.\n"
+        f"A fresh {PREMIUM_GENERATION_LIMIT} QR pack is now active."
+    )
+
+
+def merchant_upgrade_confirmation_message(approval_code: str) -> str:
     return (
         "TezQR Premium is now active on your account.\n"
+        f"Approval code: {approval_code}\n"
         f"You now have {PREMIUM_GENERATION_LIMIT} QR generations in this pack."
+    )
+
+
+def broadcast_delivery_message(message: str, bot_public_link: str) -> str:
+    return (
+        "TezQR update\n\n"
+        f"{message.strip()}\n\n"
+        f"Need a payment QR? Open TezQR here: {bot_public_link}"
+    )
+
+
+def broadcast_summary_message(*, recipients: int, delivered: int, failed: int) -> str:
+    return (
+        "Broadcast complete.\n\n"
+        f"Target merchants: {recipients}\n"
+        f"Delivered: {delivered}\n"
+        f"Failed: {failed}"
     )
 
 

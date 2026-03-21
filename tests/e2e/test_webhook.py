@@ -145,5 +145,5 @@ async def test_webhook_processes_setupi_and_pay_commands(db_session_factory) -> 
     assert pay_response.status_code == 200
     assert gateway.text_messages[0]["text"].startswith("UPI ID saved successfully.")
     assert len(gateway.photo_messages) == 1
-    assert "Made with TezQR on Telegram." in gateway.photo_messages[0]["caption"]
+    assert "Powered by TezQR on Telegram." in gateway.photo_messages[0]["caption"]
     assert "upi://pay?" in gateway.photo_messages[0]["caption"]

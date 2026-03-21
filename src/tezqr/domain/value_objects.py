@@ -76,6 +76,25 @@ class PaymentReference:
 
 
 @dataclass(frozen=True, slots=True)
+class UpgradeRequestCode:
+    value: str
+
+    _PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^TZR-[0-9]{4}-[A-Z0-9]{4}$")
+
+    def __post_init__(self) -> None:
+        normalized = self.value.strip().upper()
+        if not self._PATTERN.fullmatch(normalized):
+            raise DomainValidationError("Upgrade request code must look like TZR-1234-ABCD.")
+        object.__setattr__(self, "value", normalized)
+
+    @classmethod
+    def new(cls, telegram_id: int) -> UpgradeRequestCode:
+        if telegram_id <= 0:
+            raise DomainValidationError("Telegram chat id must be positive.")
+        return cls(f"TZR-{telegram_id % 10000:04d}-{uuid4().hex[:4].upper()}")
+
+
+@dataclass(frozen=True, slots=True)
 class UpiPaymentLink:
     vpa: UpiVpa
     amount: Money

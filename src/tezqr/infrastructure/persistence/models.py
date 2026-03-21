@@ -54,6 +54,7 @@ class UpgradeRequestModel(Base):
         nullable=False,
         index=True,
     )
+    approval_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     telegram_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     telegram_file_id: Mapped[str] = mapped_column(String(255), nullable=False)

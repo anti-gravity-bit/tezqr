@@ -14,6 +14,7 @@ from tezqr.domain.value_objects import (
     Money,
     PaymentReference,
     TelegramUser,
+    UpgradeRequestCode,
     UpiPaymentLink,
     UpiVpa,
 )
@@ -137,6 +138,7 @@ class PaymentRequest:
 class UpgradeRequest:
     id: UUID
     merchant_id: UUID
+    approval_code: UpgradeRequestCode
     telegram_chat_id: int
     telegram_message_id: int
     telegram_file_id: str
@@ -154,6 +156,7 @@ class UpgradeRequest:
         telegram_file_id: str,
         telegram_file_unique_id: str | None,
         media_kind: str,
+        approval_code: UpgradeRequestCode | None = None,
         now: datetime | None = None,
     ) -> UpgradeRequest:
         if media_kind not in {"photo", "document"}:
@@ -163,6 +166,7 @@ class UpgradeRequest:
         return cls(
             id=uuid4(),
             merchant_id=merchant_id,
+            approval_code=approval_code or UpgradeRequestCode.new(telegram_chat_id),
             telegram_chat_id=telegram_chat_id,
             telegram_message_id=telegram_message_id,
             telegram_file_id=telegram_file_id,

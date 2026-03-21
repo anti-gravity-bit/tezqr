@@ -18,6 +18,12 @@ class FakeMerchantRepository:
     def __init__(self) -> None:
         self.records: dict[int, Merchant] = {}
 
+    async def get_by_id(self, merchant_id: object) -> Merchant | None:
+        for merchant in self.records.values():
+            if merchant.id == merchant_id:
+                return merchant
+        return None
+
     async def get_by_telegram_id(self, telegram_id: int) -> Merchant | None:
         return self.records.get(telegram_id)
 
@@ -42,6 +48,13 @@ class FakeMerchantRepository:
             and merchant.telegram_user.telegram_id != exclude_telegram_id
         )
 
+    async def list_telegram_ids(self, *, exclude_telegram_id: int | None = None) -> list[int]:
+        return sorted(
+            telegram_id
+            for telegram_id in self.records
+            if telegram_id != exclude_telegram_id
+        )
+
 
 class FakePaymentRequestRepository:
     def __init__(self) -> None:
@@ -60,6 +73,19 @@ class FakeUpgradeRequestRepository:
 
     async def add(self, upgrade_request: UpgradeRequest) -> None:
         self.records.append(upgrade_request)
+
+    async def get_pending_by_approval_code(self, approval_code: str) -> UpgradeRequest | None:
+        normalized = approval_code.strip().upper()
+        for request in self.records:
+            if request.approval_code.value == normalized and request.status == "pending":
+                return request
+        return None
+
+    async def mark_as_approved(self, approval_code: str) -> None:
+        normalized = approval_code.strip().upper()
+        for request in self.records:
+            if request.approval_code.value == normalized and request.status == "pending":
+                request.status = "approved"
 
     async def mark_pending_as_approved(self, merchant_id: str) -> None:
         for request in self.records:
@@ -88,7 +114,8 @@ class FakeUnitOfWork(AbstractUnitOfWork):
 
 
 class FakeTelegramGateway(TelegramGateway):
-    def __init__(self) -> None:
+    def __init__(self, *, failing_chat_ids: set[int] | None = None) -> None:
+        self.failing_chat_ids = failing_chat_ids or set()
         self.text_messages: list[dict] = []
         self.photo_messages: list[dict] = []
         self.photo_reference_messages: list[dict] = []
@@ -102,6 +129,8 @@ class FakeTelegramGateway(TelegramGateway):
         *,
         reply_to_message_id: int | None = None,
     ) -> None:
+        if chat_id in self.failing_chat_ids:
+            raise RuntimeError(f"delivery failed for {chat_id}")
         self.text_messages.append(
             {"chat_id": chat_id, "text": text, "reply_to_message_id": reply_to_message_id}
         )
@@ -217,6 +246,18 @@ def service(
 
 
 @pytest.mark.asyncio
+async def test_random_text_gets_full_menu_reply(
+    service: BotService,
+    fake_gateway: FakeTelegramGateway,
+) -> None:
+    await service.handle_message(make_message(text="hello bot"))
+
+    assert "I did not recognise that message" in fake_gateway.text_messages[-1]["text"]
+    assert "/setupi <vpa_id>" in fake_gateway.text_messages[-1]["text"]
+    assert "/pay <amount> <description>" in fake_gateway.text_messages[-1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_setupi_updates_existing_merchant_without_resetting_quota(
     service: BotService,
     fake_uow: FakeUnitOfWork,
@@ -252,9 +293,10 @@ async def test_pay_generates_twentieth_free_qr_then_blocks_next_request(
     assert updated.generation_count == 20
     assert len(fake_uow.payment_requests.records) == 1
     assert len(fake_gateway.photo_messages) == 1
-    assert "Create your own payment QR: https://t.me/TezNudgeBot" in (
-        fake_gateway.photo_messages[0]["caption"]
-    )
+    assert "TezQR Payment Pass" in fake_gateway.photo_messages[0]["caption"]
+    assert "Fast checkout. Clean records. Zero confusion." in fake_gateway.photo_messages[0][
+        "caption"
+    ]
 
     await service.handle_message(make_message(text="/pay 99 Another order", message_id=2))
     assert len(fake_uow.payment_requests.records) == 1
@@ -288,17 +330,23 @@ async def test_paywall_screenshot_creates_upgrade_request_and_notifies_admin(
     )
 
     assert len(fake_uow.upgrade_requests.records) == 1
-    assert fake_uow.upgrade_requests.records[0].telegram_file_id == "file-123"
+    upgrade_request = fake_uow.upgrade_requests.records[0]
+    assert upgrade_request.telegram_file_id == "file-123"
+    assert upgrade_request.approval_code.value.startswith("TZR-2001-")
     assert fake_gateway.copied_messages == [
         {"chat_id": 9999, "from_chat_id": 2001, "message_id": 10}
     ]
     assert fake_gateway.text_messages[0]["chat_id"] == 2001
+    assert "Request code:" in fake_gateway.text_messages[0]["text"]
     assert fake_gateway.text_messages[-1]["chat_id"] == 9999
-    assert "Payment screenshot received." in fake_gateway.text_messages[0]["text"]
+    assert (
+        f"/approve {upgrade_request.approval_code.value}"
+        in fake_gateway.text_messages[-1]["text"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_admin_stats_and_upgrade_flow(
+async def test_admin_stats_and_legacy_upgrade_flow(
     service: BotService,
     fake_uow: FakeUnitOfWork,
     fake_gateway: FakeTelegramGateway,
@@ -327,7 +375,43 @@ async def test_admin_stats_and_upgrade_flow(
         fake_gateway.text_messages[-2]["text"]
         == "Merchant 2001 has been upgraded to TezQR Premium with a fresh 1000 QR pack."
     )
-    assert "1000 QR generations in this pack" in fake_gateway.text_messages[-1]["text"]
+    assert "Approval code: MANUAL-UPGRADE" in fake_gateway.text_messages[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_admin_can_approve_paid_pack_by_human_readable_code(
+    service: BotService,
+    fake_uow: FakeUnitOfWork,
+    fake_gateway: FakeTelegramGateway,
+) -> None:
+    merchant = Merchant.onboard(TelegramUser(telegram_id=2001, first_name="Neha"))
+    merchant.setup_vpa(UpiVpa("merchant@okaxis"))
+    merchant.generation_count = 20
+    await fake_uow.merchants.add(merchant)
+
+    await service.handle_message(
+        make_message(
+            attachment=IncomingAttachment(
+                kind="photo",
+                file_id="approval-file",
+                file_unique_id="approval-unique",
+            ),
+            message_id=10,
+        )
+    )
+    approval_code = fake_uow.upgrade_requests.records[0].approval_code.value
+
+    await service.handle_message(
+        make_message(telegram_id=9999, first_name="Admin", text=f"/approve {approval_code}")
+    )
+
+    upgraded = await fake_uow.merchants.get_by_telegram_id(2001)
+    assert upgraded is not None
+    assert upgraded.tier == MerchantTier.PREMIUM
+    assert upgraded.generation_count == 0
+    assert fake_uow.upgrade_requests.records[0].status == "approved"
+    assert fake_gateway.text_messages[-2]["text"].startswith(f"Approved {approval_code}")
+    assert f"Approval code: {approval_code}" in fake_gateway.text_messages[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -432,3 +516,39 @@ async def test_premium_quota_screenshot_creates_upgrade_request_for_renewal(
     assert len(fake_uow.upgrade_requests.records) == 1
     assert fake_uow.upgrade_requests.records[0].telegram_file_id == "renewal-file-123"
     assert "activate your 1000 QR pack" in fake_gateway.text_messages[0]["text"]
+    assert "Request code:" in fake_gateway.text_messages[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_admin_broadcast_sends_offer_to_all_merchants_and_reports_counts(
+    fake_uow: FakeUnitOfWork,
+    fixed_now: datetime,
+) -> None:
+    gateway = FakeTelegramGateway()
+    service = BotService(
+        uow_factory=lambda: fake_uow,
+        telegram_gateway=gateway,
+        qr_generator=FakeQrCodeGenerator(),
+        settings=make_settings(),
+        now_provider=lambda: fixed_now,
+    )
+    merchant_one = Merchant.onboard(TelegramUser(telegram_id=2001, first_name="Neha"))
+    merchant_two = Merchant.onboard(TelegramUser(telegram_id=2002, first_name="Arjun"))
+    await fake_uow.merchants.add(merchant_one)
+    await fake_uow.merchants.add(merchant_two)
+
+    await service.handle_message(
+        make_message(
+            telegram_id=9999,
+            first_name="Admin",
+            text="/broadcast Today only: pay Rs 99 and unlock 1000 more QRs.",
+        )
+    )
+
+    merchant_messages = [message for message in gateway.text_messages if message["chat_id"] != 9999]
+    assert len(merchant_messages) == 2
+    assert all("TezQR update" in message["text"] for message in merchant_messages)
+    assert all("https://t.me/TezNudgeBot" in message["text"] for message in merchant_messages)
+    assert gateway.text_messages[-1]["chat_id"] == 9999
+    assert "Target merchants: 2" in gateway.text_messages[-1]["text"]
+    assert "Delivered: 2" in gateway.text_messages[-1]["text"]

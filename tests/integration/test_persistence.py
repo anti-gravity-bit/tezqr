@@ -48,9 +48,20 @@ async def test_sqlalchemy_uow_persists_merchants_requests_and_stats(db_session_f
             )
             == 1
         )
-        await uow.upgrade_requests.mark_pending_as_approved(str(merchant.id))
+        pending_request = await uow.upgrade_requests.get_pending_by_approval_code(
+            upgrade_request.approval_code.value
+        )
+        assert pending_request is not None
+        assert pending_request.approval_code.value == upgrade_request.approval_code.value
+        await uow.upgrade_requests.mark_as_approved(upgrade_request.approval_code.value)
         await uow.commit()
 
     async with db_session_factory() as session:
-        statuses = (await session.scalars(select(UpgradeRequestModel.status))).all()
+        upgrade_rows = (
+            await session.execute(
+                select(UpgradeRequestModel.approval_code, UpgradeRequestModel.status)
+            )
+        ).all()
+        assert upgrade_rows[0][0] == upgrade_request.approval_code.value
+        statuses = [row[1] for row in upgrade_rows]
         assert statuses == ["approved"]

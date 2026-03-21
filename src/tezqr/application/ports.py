@@ -9,6 +9,10 @@ from tezqr.domain.entities import AdminStats, Merchant, PaymentRequest, UpgradeR
 
 class MerchantRepository(ABC):
     @abstractmethod
+    async def get_by_id(self, merchant_id: object) -> Merchant | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_by_telegram_id(self, telegram_id: int) -> Merchant | None:
         raise NotImplementedError
 
@@ -30,6 +34,10 @@ class MerchantRepository(ABC):
     ) -> int:
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_telegram_ids(self, *, exclude_telegram_id: int | None = None) -> list[int]:
+        raise NotImplementedError
+
 
 class PaymentRequestRepository(ABC):
     @abstractmethod
@@ -44,6 +52,14 @@ class PaymentRequestRepository(ABC):
 class UpgradeRequestRepository(ABC):
     @abstractmethod
     async def add(self, upgrade_request: UpgradeRequest) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_pending_by_approval_code(self, approval_code: str) -> UpgradeRequest | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_as_approved(self, approval_code: str) -> None:
         raise NotImplementedError
 
     @abstractmethod

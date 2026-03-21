@@ -35,8 +35,25 @@ class UpgradeCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ApproveCommand:
+    approval_code: str
+    name: str = "approve"
+
+
+@dataclass(frozen=True, slots=True)
+class BroadcastCommand:
+    message: str
+    name: str = "broadcast"
+
+
+@dataclass(frozen=True, slots=True)
 class ScreenshotSubmission:
     attachment: IncomingAttachment
+
+
+@dataclass(frozen=True, slots=True)
+class PlainTextMessage:
+    raw: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +78,10 @@ ParsedInput = (
     | PayCommand
     | StatsCommand
     | UpgradeCommand
+    | ApproveCommand
+    | BroadcastCommand
     | ScreenshotSubmission
+    | PlainTextMessage
     | UnsupportedCommand
     | MalformedCommand
     | EmptyInput
@@ -73,6 +93,7 @@ def parse_message(message: IncomingMessage) -> ParsedInput:
     if text.startswith("/"):
         parts = text.split(maxsplit=2)
         command = parts[0].split("@", 1)[0].lower()
+        remainder = text[len(parts[0]) :].strip()
 
         if command == "/start":
             return StartCommand()
@@ -94,9 +115,20 @@ def parse_message(message: IncomingMessage) -> ParsedInput:
             except ValueError:
                 return MalformedCommand(name="upgrade", usage="/upgrade <target_telegram_id>")
             return UpgradeCommand(target_telegram_id=target_telegram_id)
+        if command == "/approve":
+            if not remainder:
+                return MalformedCommand(name="approve", usage="/approve <request_code>")
+            return ApproveCommand(approval_code=remainder)
+        if command == "/broadcast":
+            if not remainder:
+                return MalformedCommand(name="broadcast", usage="/broadcast <message>")
+            return BroadcastCommand(message=remainder)
         return UnsupportedCommand(raw=parts[0])
 
     if message.attachment is not None:
         return ScreenshotSubmission(attachment=message.attachment)
+
+    if text:
+        return PlainTextMessage(raw=text)
 
     return EmptyInput()

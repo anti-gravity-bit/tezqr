@@ -12,7 +12,7 @@ from tezqr.application.ports import (
 )
 from tezqr.domain.entities import Merchant, PaymentRequest, UpgradeRequest
 from tezqr.domain.enums import MerchantTier
-from tezqr.domain.value_objects import TelegramUser, UpiVpa
+from tezqr.domain.value_objects import TelegramUser, UpgradeRequestCode, UpiVpa
 from tezqr.infrastructure.persistence.models import (
     MerchantModel,
     PaymentRequestModel,
@@ -38,9 +38,30 @@ def _merchant_to_domain(model: MerchantModel) -> Merchant:
     )
 
 
+def _upgrade_request_to_domain(model: UpgradeRequestModel) -> UpgradeRequest:
+    return UpgradeRequest(
+        id=model.id,
+        merchant_id=model.merchant_id,
+        approval_code=UpgradeRequestCode(model.approval_code),
+        telegram_chat_id=model.telegram_chat_id,
+        telegram_message_id=model.telegram_message_id,
+        telegram_file_id=model.telegram_file_id,
+        telegram_file_unique_id=model.telegram_file_unique_id,
+        media_kind=model.media_kind,
+        status=model.status,
+        created_at=model.created_at,
+    )
+
+
 class SQLAlchemyMerchantRepository(MerchantRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_by_id(self, merchant_id: object) -> Merchant | None:
+        result = await self._session.get(MerchantModel, merchant_id)
+        if result is None:
+            return None
+        return _merchant_to_domain(result)
 
     async def get_by_telegram_id(self, telegram_id: int) -> Merchant | None:
         result = await self._session.scalar(
@@ -100,6 +121,13 @@ class SQLAlchemyMerchantRepository(MerchantRepository):
         result = await self._session.scalar(select(func.count(MerchantModel.id)).where(*filters))
         return int(result or 0)
 
+    async def list_telegram_ids(self, *, exclude_telegram_id: int | None = None) -> list[int]:
+        query = select(MerchantModel.telegram_id).order_by(MerchantModel.telegram_id.asc())
+        if exclude_telegram_id is not None:
+            query = query.where(MerchantModel.telegram_id != exclude_telegram_id)
+        result = await self._session.scalars(query)
+        return [int(telegram_id) for telegram_id in result.all()]
+
 
 class SQLAlchemyPaymentRequestRepository(PaymentRequestRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -133,6 +161,7 @@ class SQLAlchemyUpgradeRequestRepository(UpgradeRequestRepository):
             UpgradeRequestModel(
                 id=upgrade_request.id,
                 merchant_id=upgrade_request.merchant_id,
+                approval_code=upgrade_request.approval_code.value,
                 telegram_chat_id=upgrade_request.telegram_chat_id,
                 telegram_message_id=upgrade_request.telegram_message_id,
                 telegram_file_id=upgrade_request.telegram_file_id,
@@ -141,6 +170,27 @@ class SQLAlchemyUpgradeRequestRepository(UpgradeRequestRepository):
                 status=upgrade_request.status,
                 created_at=upgrade_request.created_at,
             )
+        )
+
+    async def get_pending_by_approval_code(self, approval_code: str) -> UpgradeRequest | None:
+        result = await self._session.scalar(
+            select(UpgradeRequestModel).where(
+                UpgradeRequestModel.approval_code == approval_code.strip().upper(),
+                UpgradeRequestModel.status == "pending",
+            )
+        )
+        if result is None:
+            return None
+        return _upgrade_request_to_domain(result)
+
+    async def mark_as_approved(self, approval_code: str) -> None:
+        await self._session.execute(
+            update(UpgradeRequestModel)
+            .where(
+                UpgradeRequestModel.approval_code == approval_code.strip().upper(),
+                UpgradeRequestModel.status == "pending",
+            )
+            .values(status="approved")
         )
 
     async def mark_pending_as_approved(self, merchant_id: str) -> None:

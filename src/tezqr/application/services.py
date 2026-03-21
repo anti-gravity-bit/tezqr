@@ -7,9 +7,12 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from tezqr.application.commands import (
+    ApproveCommand,
+    BroadcastCommand,
     EmptyInput,
     MalformedCommand,
     PayCommand,
+    PlainTextMessage,
     ScreenshotSubmission,
     SetupiCommand,
     StartCommand,
@@ -21,12 +24,16 @@ from tezqr.application.commands import (
 from tezqr.application.dto import IncomingMessage
 from tezqr.application.ports import QrCodeGenerator, TelegramGateway, UnitOfWorkFactory
 from tezqr.application.replies import (
+    admin_approval_success_message,
     admin_only_message,
     admin_upgrade_request_message,
     admin_upgrade_success_message,
     already_premium_message,
+    approve_request_not_found_message,
+    broadcast_delivery_message,
+    broadcast_summary_message,
+    fallback_menu_message,
     free_plan_still_available_message,
-    help_message,
     invalid_amount_message,
     invalid_vpa_message,
     malformed_command_message,
@@ -77,10 +84,17 @@ class BotService:
 
         if isinstance(parsed, EmptyInput):
             return
+        if isinstance(parsed, PlainTextMessage):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                fallback_menu_message(is_admin=self._is_admin(message.from_user.telegram_id)),
+                reply_to_message_id=message.message_id,
+            )
+            return
         if isinstance(parsed, UnsupportedCommand):
             await self._telegram_gateway.send_text(
                 message.chat_id,
-                help_message(),
+                fallback_menu_message(is_admin=self._is_admin(message.from_user.telegram_id)),
                 reply_to_message_id=message.message_id,
             )
             return
@@ -106,6 +120,12 @@ class BotService:
             return
         if isinstance(parsed, StatsCommand):
             await self._handle_stats(message)
+            return
+        if isinstance(parsed, ApproveCommand):
+            await self._handle_approve(message, parsed)
+            return
+        if isinstance(parsed, BroadcastCommand):
+            await self._handle_broadcast(message, parsed)
             return
         if isinstance(parsed, UpgradeCommand):
             await self._handle_upgrade(message, parsed)
@@ -276,7 +296,7 @@ class BotService:
 
         await self._telegram_gateway.send_text(
             message.chat_id,
-            screenshot_received_message(),
+            screenshot_received_message(upgrade_request.approval_code.value),
             reply_to_message_id=message.message_id,
         )
         await self._telegram_gateway.copy_message(
@@ -286,7 +306,7 @@ class BotService:
         )
         await self._telegram_gateway.send_text(
             self._settings.admin_telegram_id,
-            admin_upgrade_request_message(message.from_user),
+            admin_upgrade_request_message(message.from_user, upgrade_request.approval_code.value),
         )
 
     async def _handle_stats(self, message: IncomingMessage) -> None:
@@ -349,7 +369,91 @@ class BotService:
         )
         await self._telegram_gateway.send_text(
             command.target_telegram_id,
-            merchant_upgrade_confirmation_message(),
+            merchant_upgrade_confirmation_message("MANUAL-UPGRADE"),
+        )
+
+    async def _handle_approve(self, message: IncomingMessage, command: ApproveCommand) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        now = self._now_provider()
+
+        async with self._uow_factory() as uow:
+            upgrade_request = await uow.upgrade_requests.get_pending_by_approval_code(
+                command.approval_code
+            )
+            if upgrade_request is None:
+                await self._telegram_gateway.send_text(
+                    message.chat_id,
+                    approve_request_not_found_message(command.approval_code),
+                    reply_to_message_id=message.message_id,
+                )
+                return
+
+            merchant = await uow.merchants.get_by_id(upgrade_request.merchant_id)
+            if merchant is None:
+                await self._telegram_gateway.send_text(
+                    message.chat_id,
+                    approve_request_not_found_message(command.approval_code),
+                    reply_to_message_id=message.message_id,
+                )
+                return
+
+            merchant.upgrade(now)
+            await uow.merchants.save(merchant)
+            await uow.upgrade_requests.mark_as_approved(upgrade_request.approval_code.value)
+            await uow.commit()
+
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            admin_approval_success_message(
+                upgrade_request.approval_code.value,
+                merchant.telegram_user.telegram_id,
+            ),
+            reply_to_message_id=message.message_id,
+        )
+        await self._telegram_gateway.send_text(
+            merchant.telegram_user.telegram_id,
+            merchant_upgrade_confirmation_message(upgrade_request.approval_code.value),
+        )
+
+    async def _handle_broadcast(self, message: IncomingMessage, command: BroadcastCommand) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+
+        async with self._uow_factory() as uow:
+            recipient_ids = await uow.merchants.list_telegram_ids(
+                exclude_telegram_id=self._settings.admin_telegram_id
+            )
+            await uow.commit()
+
+        delivered = 0
+        failed = 0
+        broadcast_text = broadcast_delivery_message(command.message, self._settings.bot_public_link)
+        for recipient_id in recipient_ids:
+            try:
+                await self._telegram_gateway.send_text(recipient_id, broadcast_text)
+                delivered += 1
+            except Exception:
+                failed += 1
+
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            broadcast_summary_message(
+                recipients=len(recipient_ids),
+                delivered=delivered,
+                failed=failed,
+            ),
+            reply_to_message_id=message.message_id,
         )
 
     async def _record_existing_merchant_command(self, message: IncomingMessage) -> None:
