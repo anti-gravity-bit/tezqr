@@ -29,6 +29,8 @@ The local stack is webhook-only. Use a tunnel or send webhook payloads directly 
 
 Use `docker compose -f docker-compose-prod.yml up -d --build` with a real `APP_DOMAIN`. Caddy handles HTTPS termination and proxies to the FastAPI container.
 
+If you prefer Nginx and Certbot on a VPS, use `.env.server.example`, `docker-compose-server.yml`, and the server guide in `docs/deployment.md`.
+
 ## Subscription Payment Details
 
 The TezQR owner can configure the premium upgrade payment details through environment variables:
