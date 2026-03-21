@@ -20,6 +20,7 @@ from tezqr.domain.value_objects import (
 from tezqr.shared.time import utc_now
 
 FREE_GENERATION_LIMIT = 20
+PREMIUM_GENERATION_LIMIT = 1000
 
 
 @dataclass(slots=True)
@@ -62,6 +63,7 @@ class Merchant:
 
     def upgrade(self, now: datetime | None = None) -> None:
         self.tier = MerchantTier.PREMIUM
+        self.generation_count = 0
         self.updated_at = now or utc_now()
 
     @property
@@ -70,7 +72,9 @@ class Merchant:
 
     @property
     def quota_reached(self) -> bool:
-        return self.tier == MerchantTier.FREE and self.generation_count >= FREE_GENERATION_LIMIT
+        if self.tier == MerchantTier.PREMIUM:
+            return self.generation_count >= PREMIUM_GENERATION_LIMIT
+        return self.generation_count >= FREE_GENERATION_LIMIT
 
     def ensure_ready_for_generation(self) -> None:
         if not self.vpa:
@@ -78,7 +82,7 @@ class Merchant:
                 "Merchant must register a UPI VPA before generating QR codes."
             )
         if self.quota_reached:
-            raise FreeQuotaExceededError("Free-tier generation quota has been exhausted.")
+            raise FreeQuotaExceededError("Generation quota has been exhausted for this merchant.")
 
     def record_generation(self, now: datetime | None = None) -> None:
         self.ensure_ready_for_generation()

@@ -1,6 +1,6 @@
 # TezQR
 
-TezQR is a headless Telegram bot micro-SaaS for Indian SMBs. Merchants register a UPI VPA, request payment QR codes through Telegram commands, and move to premium through a concierge upgrade flow.
+TezQR is a headless Telegram bot micro-SaaS for Indian SMBs. Merchants register a UPI VPA, request payment QR codes through Telegram commands, and move to a paid 1000-QR pack through a concierge upgrade flow.
 
 ## Core Commands
 
@@ -38,8 +38,9 @@ The TezQR owner can configure the premium upgrade payment details through enviro
 - `SUBSCRIPTION_PAYMENT_UPI_ID` for a custom UPI ID
 - `SUBSCRIPTION_PAYMENT_LINK` for a hosted payment link
 - `SUBSCRIPTION_PAYMENT_QR` for a public QR image URL or Telegram file ID
+- `BOT_PUBLIC_LINK` for the branded share link shown on merchant QR captions
 
-If no custom subscription UPI ID is provided, TezQR falls back to `ADMIN_UPI_ID`.
+If no custom subscription payment link or QR is provided, TezQR falls back to `ADMIN_UPI_ID` and generates the payment QR automatically for the `Rs 99 / 1000 QR` pack.
 
 ## GitHub Actions
 

@@ -8,7 +8,7 @@ import pytest
 from tezqr.application.dto import IncomingAttachment, IncomingMessage
 from tezqr.application.ports import AbstractUnitOfWork, QrCodeGenerator, TelegramGateway
 from tezqr.application.services import BotService
-from tezqr.domain.entities import Merchant, PaymentRequest, UpgradeRequest
+from tezqr.domain.entities import PREMIUM_GENERATION_LIMIT, Merchant, PaymentRequest, UpgradeRequest
 from tezqr.domain.enums import MerchantTier
 from tezqr.domain.value_objects import Money, TelegramUser, UpiVpa
 from tezqr.shared.config import Settings
@@ -252,11 +252,17 @@ async def test_pay_generates_twentieth_free_qr_then_blocks_next_request(
     assert updated.generation_count == 20
     assert len(fake_uow.payment_requests.records) == 1
     assert len(fake_gateway.photo_messages) == 1
+    assert "Create your own payment QR: https://t.me/TezNudgeBot" in (
+        fake_gateway.photo_messages[0]["caption"]
+    )
 
     await service.handle_message(make_message(text="/pay 99 Another order", message_id=2))
     assert len(fake_uow.payment_requests.records) == 1
-    assert len(fake_gateway.photo_messages) == 1
-    assert "Free plan limit reached." in fake_gateway.text_messages[-1]["text"]
+    assert len(fake_gateway.photo_messages) == 2
+    assert fake_gateway.photo_messages[-1]["filename"] == "tezqr-premium-pack.png"
+    assert "1000 QR generations" in fake_gateway.photo_messages[-1]["caption"]
+    assert "UPI ID: owner@upi" in fake_gateway.photo_messages[-1]["caption"]
+    assert "Payment link:" in fake_gateway.photo_messages[-1]["caption"]
 
 
 @pytest.mark.asyncio
@@ -316,11 +322,12 @@ async def test_admin_stats_and_upgrade_flow(
     upgraded = await fake_uow.merchants.get_by_telegram_id(2001)
     assert upgraded is not None
     assert upgraded.tier == MerchantTier.PREMIUM
+    assert upgraded.generation_count == 0
     assert (
         fake_gateway.text_messages[-2]["text"]
-        == "Merchant 2001 has been upgraded to TezQR Premium."
+        == "Merchant 2001 has been upgraded to TezQR Premium with a fresh 1000 QR pack."
     )
-    assert "Premium is now active" in fake_gateway.text_messages[-1]["text"]
+    assert "1000 QR generations in this pack" in fake_gateway.text_messages[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -370,3 +377,58 @@ async def test_paywall_can_send_owner_configured_subscription_qr() -> None:
     )
     assert "UPI ID: premium@upi" in fake_gateway.photo_reference_messages[0]["caption"]
     assert "https://pay.example.com/tezqr" in fake_gateway.photo_reference_messages[0]["caption"]
+    assert "1000 QR generations" in fake_gateway.photo_reference_messages[0]["caption"]
+
+
+@pytest.mark.asyncio
+async def test_premium_pack_allows_thousandth_qr_then_requires_renewal(
+    service: BotService,
+    fake_uow: FakeUnitOfWork,
+    fake_gateway: FakeTelegramGateway,
+) -> None:
+    merchant = Merchant.onboard(TelegramUser(telegram_id=2001, first_name="Neha"))
+    merchant.setup_vpa(UpiVpa("merchant@okaxis"))
+    merchant.upgrade()
+    merchant.generation_count = PREMIUM_GENERATION_LIMIT - 1
+    await fake_uow.merchants.add(merchant)
+
+    await service.handle_message(make_message(text="/pay 51 Final premium QR"))
+    updated = await fake_uow.merchants.get_by_telegram_id(2001)
+    assert updated is not None
+    assert updated.generation_count == PREMIUM_GENERATION_LIMIT
+    assert len(fake_uow.payment_requests.records) == 1
+
+    await service.handle_message(make_message(text="/pay 52 Renewal needed", message_id=2))
+    assert len(fake_uow.payment_requests.records) == 1
+    assert len(fake_gateway.photo_messages) == 2
+    assert fake_gateway.photo_messages[-1]["filename"] == "tezqr-premium-pack.png"
+    assert "another 1000 QR generations" in fake_gateway.photo_messages[-1]["caption"]
+    assert "Payment link:" in fake_gateway.photo_messages[-1]["caption"]
+
+
+@pytest.mark.asyncio
+async def test_premium_quota_screenshot_creates_upgrade_request_for_renewal(
+    service: BotService,
+    fake_uow: FakeUnitOfWork,
+    fake_gateway: FakeTelegramGateway,
+) -> None:
+    merchant = Merchant.onboard(TelegramUser(telegram_id=2001, first_name="Neha"))
+    merchant.setup_vpa(UpiVpa("merchant@okaxis"))
+    merchant.upgrade()
+    merchant.generation_count = PREMIUM_GENERATION_LIMIT
+    await fake_uow.merchants.add(merchant)
+
+    await service.handle_message(
+        make_message(
+            attachment=IncomingAttachment(
+                kind="photo",
+                file_id="renewal-file-123",
+                file_unique_id="renewal-unique-123",
+            ),
+            message_id=11,
+        )
+    )
+
+    assert len(fake_uow.upgrade_requests.records) == 1
+    assert fake_uow.upgrade_requests.records[0].telegram_file_id == "renewal-file-123"
+    assert "activate your 1000 QR pack" in fake_gateway.text_messages[0]["text"]

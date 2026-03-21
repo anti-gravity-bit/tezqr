@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from tezqr.application.commands import (
@@ -41,7 +42,13 @@ from tezqr.application.replies import (
     stats_message,
     welcome_message,
 )
-from tezqr.domain.entities import AdminStats, Merchant, PaymentRequest, UpgradeRequest
+from tezqr.domain.entities import (
+    PREMIUM_GENERATION_LIMIT,
+    AdminStats,
+    Merchant,
+    PaymentRequest,
+    UpgradeRequest,
+)
 from tezqr.domain.enums import MerchantTier
 from tezqr.domain.exceptions import DomainValidationError, MerchantSetupRequiredError
 from tezqr.domain.value_objects import Money, UpiVpa
@@ -181,10 +188,10 @@ class BotService:
             merchant.refresh_profile(message.from_user, now)
             merchant.register_command(now)
 
-            if merchant.tier == MerchantTier.FREE and merchant.quota_reached:
+            if merchant.quota_reached:
                 await uow.merchants.save(merchant)
                 await uow.commit()
-                await self._send_paywall_response(message)
+                await self._send_paywall_response(message, merchant.tier)
                 return
 
             try:
@@ -214,7 +221,7 @@ class BotService:
             message.chat_id,
             qr_bytes,
             filename=f"{payment_request.reference.value}.png",
-            caption=payment_qr_caption(payment_request),
+            caption=payment_qr_caption(payment_request, self._settings.bot_public_link),
             reply_to_message_id=message.message_id,
         )
 
@@ -237,7 +244,7 @@ class BotService:
             merchant.refresh_profile(message.from_user, now)
             await uow.merchants.save(merchant)
 
-            if merchant.tier == MerchantTier.PREMIUM:
+            if merchant.tier == MerchantTier.PREMIUM and not merchant.quota_reached:
                 await uow.commit()
                 await self._telegram_gateway.send_text(
                     message.chat_id,
@@ -246,7 +253,7 @@ class BotService:
                 )
                 return
 
-            if not merchant.quota_reached:
+            if merchant.tier == MerchantTier.FREE and not merchant.quota_reached:
                 await uow.commit()
                 await self._telegram_gateway.send_text(
                     message.chat_id,
@@ -359,12 +366,27 @@ class BotService:
     def _is_admin(self, telegram_id: int) -> bool:
         return telegram_id == self._settings.admin_telegram_id
 
-    async def _send_paywall_response(self, message: IncomingMessage) -> None:
-        message_text = paywall_message(self._settings)
+    async def _send_paywall_response(
+        self,
+        message: IncomingMessage,
+        tier: MerchantTier,
+    ) -> None:
+        subscription_payment_link = self._resolve_subscription_payment_link()
+        message_text = paywall_message(self._settings, tier, subscription_payment_link)
         if self._settings.subscription_payment_qr:
             await self._telegram_gateway.send_photo_reference(
                 message.chat_id,
                 self._settings.subscription_payment_qr,
+                caption=message_text,
+                reply_to_message_id=message.message_id,
+            )
+            return
+        if subscription_payment_link:
+            qr_bytes = await self._qr_generator.generate_png(subscription_payment_link)
+            await self._telegram_gateway.send_photo(
+                message.chat_id,
+                qr_bytes,
+                filename="tezqr-premium-pack.png",
                 caption=message_text,
                 reply_to_message_id=message.message_id,
             )
@@ -374,3 +396,20 @@ class BotService:
             message_text,
             reply_to_message_id=message.message_id,
         )
+
+    def _resolve_subscription_payment_link(self) -> str | None:
+        if self._settings.subscription_payment_link:
+            return self._settings.subscription_payment_link
+        try:
+            upi_vpa = UpiVpa(self._settings.effective_subscription_upi_id)
+            amount = Money(Decimal(self._settings.subscription_price_inr))
+        except (DomainValidationError, InvalidOperation):
+            return None
+        params = {
+            "pa": upi_vpa.value,
+            "pn": "TezQR",
+            "am": amount.as_upi_amount(),
+            "cu": "INR",
+            "tn": f"TezQR Premium {PREMIUM_GENERATION_LIMIT} QR pack",
+        }
+        return f"upi://pay?{urlencode(params, quote_via=quote)}"

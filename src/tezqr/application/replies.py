@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from tezqr.domain.entities import AdminStats, PaymentRequest
+from tezqr.domain.entities import (
+    FREE_GENERATION_LIMIT,
+    PREMIUM_GENERATION_LIMIT,
+    AdminStats,
+    PaymentRequest,
+)
+from tezqr.domain.enums import MerchantTier
 from tezqr.domain.value_objects import TelegramUser
 from tezqr.shared.config import Settings
 
@@ -12,7 +18,8 @@ def welcome_message() -> str:
         "Getting started:\n"
         "1. Save your UPI ID with /setupi your@upi\n"
         "2. Generate a payment QR with /pay <amount> <description>\n\n"
-        "Your free plan includes 20 QR generations."
+        f"Your free plan includes {FREE_GENERATION_LIMIT} QR generations.\n"
+        f"Upgrade for Rs 99 to unlock {PREMIUM_GENERATION_LIMIT} QR generations."
     )
 
 
@@ -63,44 +70,66 @@ def missing_description_message() -> str:
     return "Please add a payment description.\nUse: /pay <amount> <description>"
 
 
-def payment_qr_caption(payment_request: PaymentRequest) -> str:
+def payment_qr_caption(payment_request: PaymentRequest, bot_public_link: str) -> str:
     return (
-        "Payment QR ready.\n\n"
-        f"Amount: Rs {payment_request.amount.as_upi_amount()}\n"
-        f"Description: {payment_request.description}\n"
-        f"Reference: {payment_request.reference.value}\n\n"
-        f"UPI link:\n{payment_request.upi_uri}"
+        "Collect Rs "
+        f"{payment_request.amount.as_upi_amount()} for {payment_request.description}.\n\n"
+        "Share this QR with your customer. "
+        "They can scan it or pay directly with the UPI link below.\n\n"
+        f"UPI link:\n{payment_request.upi_uri}\n\n"
+        f"Ref: {payment_request.reference.value}\n\n"
+        "Made with TezQR on Telegram.\n"
+        f"Create your own payment QR: {bot_public_link}"
     )
 
 
-def paywall_message(settings: Settings) -> str:
+def paywall_message(
+    settings: Settings,
+    tier: MerchantTier,
+    payment_link: str | None = None,
+) -> str:
+    if tier == MerchantTier.PREMIUM:
+        header = f"Your current {PREMIUM_GENERATION_LIMIT} QR pack is exhausted."
+        offer = (
+            f"Renew for Rs {settings.subscription_price_inr} to unlock another "
+            f"{PREMIUM_GENERATION_LIMIT} QR generations."
+        )
+    else:
+        header = f"You have used all {FREE_GENERATION_LIMIT} free TezQR QR generations."
+        offer = (
+            f"Upgrade for Rs {settings.subscription_price_inr} to unlock "
+            f"{PREMIUM_GENERATION_LIMIT} QR generations."
+        )
     lines = [
-        "Free plan limit reached.",
-        "",
-        "You have used all 20 free TezQR QR generations.",
-        f"Upgrade to TezQR Premium for Rs {settings.subscription_price_inr}.",
+        header,
+        offer,
         "",
         "Next steps:",
-        "1. Pay using the details below",
+        "1. Pay using the QR or UPI details below",
         "2. Reply here with the payment screenshot",
-        "3. The TezQR owner will verify your payment and activate premium access",
+        "3. The TezQR owner will verify your payment and activate your next pack",
         "",
         f"UPI ID: {settings.effective_subscription_upi_id}",
     ]
-    if settings.subscription_payment_link:
-        lines.extend(["Payment link:", settings.subscription_payment_link])
+    effective_link = payment_link or settings.subscription_payment_link
+    if effective_link:
+        lines.extend(["Payment link:", effective_link])
     return "\n".join(lines)
 
 
 def screenshot_received_message() -> str:
     return (
         "Payment screenshot received.\n\n"
-        "We will verify it shortly and upgrade your TezQR account once the payment is confirmed."
+        "We will verify it shortly and activate your "
+        f"{PREMIUM_GENERATION_LIMIT} QR pack once the payment is confirmed."
     )
 
 
 def already_premium_message() -> str:
-    return "TezQR Premium is already active on your account."
+    return (
+        "TezQR Premium is already active on your account.\n"
+        "Use /pay <amount> <description> to keep generating payment QRs."
+    )
 
 
 def free_plan_still_available_message() -> str:
@@ -133,12 +162,16 @@ def merchant_not_found_message(telegram_id: int) -> str:
 
 
 def admin_upgrade_success_message(telegram_id: int) -> str:
-    return f"Merchant {telegram_id} has been upgraded to TezQR Premium."
+    return (
+        f"Merchant {telegram_id} has been upgraded to TezQR Premium "
+        f"with a fresh {PREMIUM_GENERATION_LIMIT} QR pack."
+    )
 
 
 def merchant_upgrade_confirmation_message() -> str:
     return (
-        "TezQR Premium is now active on your account.\nYou can generate unlimited payment QR codes."
+        "TezQR Premium is now active on your account.\n"
+        f"You now have {PREMIUM_GENERATION_LIMIT} QR generations in this pack."
     )
 
 

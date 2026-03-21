@@ -32,6 +32,7 @@ Copy `.env.server.example` to `.env.server` and set:
 - `TELEGRAM_BOT_TOKEN`
 - `ADMIN_TELEGRAM_ID`
 - `ADMIN_UPI_ID`
+- `BOT_PUBLIC_LINK`
 - `TELEGRAM_WEBHOOK_SECRET`
 - `APP_DOMAIN` after your domain is ready
 
@@ -42,6 +43,7 @@ Optional owner payment settings:
 - `SUBSCRIPTION_PAYMENT_QR`
 
 If `SUBSCRIPTION_PAYMENT_UPI_ID` is empty, the bot falls back to `ADMIN_UPI_ID`.
+If `SUBSCRIPTION_PAYMENT_LINK` and `SUBSCRIPTION_PAYMENT_QR` are empty, TezQR generates the `Rs 99 / 1000 QR` payment pack QR automatically from the owner UPI ID.
 
 ## Nginx reverse proxy
 
@@ -93,12 +95,13 @@ and restart the API container so TezQR registers the webhook automatically on st
 
 ## Owner payment configuration
 
-For TezQR Premium payment instructions:
+For the TezQR `Rs 99 / 1000 QR` upgrade pack:
 
 - `ADMIN_UPI_ID` is the default owner UPI ID.
 - `SUBSCRIPTION_PAYMENT_UPI_ID` overrides the default owner UPI ID for premium payment collection.
 - `SUBSCRIPTION_PAYMENT_LINK` adds a direct payment URL in the paywall reply.
 - `SUBSCRIPTION_PAYMENT_QR` sends a hosted QR image URL or Telegram file ID in the paywall reply.
+- `BOT_PUBLIC_LINK` is included in merchant QR captions so forwarded QR messages promote your bot.
 
 ## Health checks
 
@@ -117,4 +120,3 @@ docker compose \
   -f docker-compose-server.yml \
   ps
 ```
-

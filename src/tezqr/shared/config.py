@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "TezQR"
     app_env: Literal["local", "production", "test"] = "local"
+    bot_public_link: str = "https://t.me/TezNudgeBot"
     database_url: str = "postgresql+asyncpg://tezqr:tezqr@localhost:5432/tezqr"
     telegram_bot_token: str = Field(default="replace-me")
     admin_telegram_id: int = Field(default=123456789)
