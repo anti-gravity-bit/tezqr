@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import httpx
@@ -13,6 +14,8 @@ from tezqr.infrastructure.telegram.client import TelegramBotClient
 from tezqr.shared.config import Settings
 from tezqr.shared.db import build_async_session_factory, build_engine
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class AppContainer:
@@ -23,8 +26,18 @@ class AppContainer:
     bot_service: BotService
 
     async def startup(self) -> None:
-        if self.settings.auto_register_webhook and self.settings.webhook_url:
-            await self.telegram_client.set_webhook(self.settings.webhook_url)
+        if (
+            self.settings.app_env != "production"
+            and self.settings.auto_register_webhook
+            and self.settings.webhook_url
+        ):
+            try:
+                await self.telegram_client.set_webhook(self.settings.webhook_url)
+            except Exception:
+                logger.warning(
+                    "Telegram webhook auto-registration skipped after failure.",
+                    exc_info=True,
+                )
 
     async def shutdown(self) -> None:
         await self.telegram_client.aclose()
