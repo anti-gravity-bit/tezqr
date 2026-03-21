@@ -1,0 +1,8 @@
+services:
+  api:
+    ports:
+      - "${API_HOST_PORT:-18000}:8000"
+
+  db:
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
