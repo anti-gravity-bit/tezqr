@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from tezqr.application.provider_bot_commands import (
+    ProviderBotItemCodeCommand,
     ProviderBotLoginCommand,
     ProviderBotMalformedCommand,
     ProviderBotMemberAddCommand,
@@ -53,3 +54,9 @@ def test_parse_provider_bot_note_command_requires_message() -> None:
         name="note",
         usage="/note <payment_reference> <note>",
     )
+
+
+def test_parse_provider_bot_item_code_accepts_telegram_menu_alias() -> None:
+    parsed = parse_provider_bot_input("/item_code CONSULT-01 499")
+
+    assert parsed == ProviderBotItemCodeCommand(item_code="CONSULT-01", amount="499")

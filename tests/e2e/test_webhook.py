@@ -18,6 +18,7 @@ class SpyTelegramGateway(TelegramGateway):
         self.text_messages: list[dict] = []
         self.photo_messages: list[dict] = []
         self.photo_reference_messages: list[dict] = []
+        self.command_sets: list[dict] = []
 
     async def send_text(
         self,
@@ -70,6 +71,21 @@ class SpyTelegramGateway(TelegramGateway):
         return None
 
     async def set_webhook(self, url: str) -> None:
+        return None
+
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        self.command_sets.append({"commands": commands, "scope": scope})
+
+    async def delete_my_commands(
+        self,
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
         return None
 
 

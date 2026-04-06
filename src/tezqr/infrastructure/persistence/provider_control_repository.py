@@ -157,6 +157,21 @@ class SQLAlchemyProviderControlRepository:
             )
         )
 
+    async def list_active_platform_bots(
+        self,
+        platform: BotPlatform,
+    ) -> list[ProviderBotInstanceModel]:
+        return (
+            await self._session.scalars(
+                select(ProviderBotInstanceModel)
+                .where(
+                    ProviderBotInstanceModel.platform == platform.value,
+                    ProviderBotInstanceModel.is_active.is_(True),
+                )
+                .order_by(ProviderBotInstanceModel.created_at.asc())
+            )
+        ).all()
+
     async def list_clients(self, provider_id: UUID) -> list[ClientModel]:
         return (
             await self._session.scalars(

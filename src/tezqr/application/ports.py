@@ -109,6 +109,23 @@ class TelegramGateway(ABC):
     async def set_webhook(self, url: str) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_my_commands(
+        self,
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        raise NotImplementedError
+
 
 class QrCodeGenerator(ABC):
     @abstractmethod

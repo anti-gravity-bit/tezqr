@@ -97,8 +97,33 @@ class TelegramBotClient(TelegramGateway):
             },
         )
 
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        payload: dict[str, object] = {"commands": commands}
+        if scope is not None:
+            payload["scope"] = scope
+        await self._post_json("setMyCommands", payload)
+
+    async def delete_my_commands(
+        self,
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        payload: dict[str, object] = {}
+        if scope is not None:
+            payload["scope"] = scope
+        await self._post_json("deleteMyCommands", payload)
+
     async def _post_json(self, method: str, payload: dict[str, object]) -> None:
-        body = {key: value for key, value in payload.items() if value not in {None, ""}}
+        body = {
+            key: value
+            for key, value in payload.items()
+            if value is not None and value != ""
+        }
         response = await self._http_client.post(self._build_url(method), json=body)
         self._raise_for_telegram_error(response)
 

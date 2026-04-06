@@ -17,7 +17,7 @@ Legacy TezQR owner and merchant bot:
 Provider bot public/client commands:
 
 - `/start`
-- `/item-code <code> [amount]`
+- `/item_code <code> [amount]` on Telegram menu, `/item-code <code> [amount]` also works
 - `/pay <amount> <desc>`
 
 Provider bot staff commands after `/login <actor_code> <api_key>`:

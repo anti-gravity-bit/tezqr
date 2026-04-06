@@ -9,9 +9,25 @@ from tezqr.shared.config import Settings
 class FakeTelegramClient:
     def __init__(self) -> None:
         self.webhooks: list[str] = []
+        self.command_sets: list[dict[str, object]] = []
 
     async def set_webhook(self, url: str) -> None:
         self.webhooks.append(url)
+
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        self.command_sets.append({"commands": commands, "scope": scope})
+
+    async def delete_my_commands(
+        self,
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        return None
 
     async def aclose(self) -> None:
         return None
@@ -42,6 +58,8 @@ async def test_startup_skips_webhook_registration_in_production() -> None:
     await container.startup()
 
     assert telegram_client.webhooks == []
+    assert telegram_client.command_sets[0]["commands"][0]["command"] == "start"
+    assert telegram_client.command_sets[1]["scope"] == {"type": "chat", "chat_id": 123456789}
 
 
 @pytest.mark.asyncio
@@ -64,3 +82,4 @@ async def test_startup_registers_webhook_outside_production() -> None:
     await container.startup()
 
     assert telegram_client.webhooks == ["https://tez.goholic.in/webhooks/telegram/secret"]
+    assert telegram_client.command_sets[0]["commands"][1]["command"] == "setupi"

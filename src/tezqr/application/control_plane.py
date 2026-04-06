@@ -14,6 +14,7 @@ The service intentionally sits above the domain layer and below the FastAPI cont
 from __future__ import annotations
 
 import csv
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +53,11 @@ from tezqr.application.provider_bot_commands import (
     ProviderBotUnsupportedCommand,
     ProviderBotWhoamiCommand,
     parse_provider_bot_input,
+)
+from tezqr.application.telegram_menu_commands import (
+    provider_public_commands,
+    provider_staff_commands,
+    to_telegram_menu_payload,
 )
 from tezqr.domain.entities import (
     Client,
@@ -108,6 +114,8 @@ ROLE_RANK = {
     ProviderMemberRole.OWNER: 40,
     ProviderMemberRole.API: 50,
 }
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -386,7 +394,30 @@ class ControlPlaneService:
             )
             session.add(model)
             await session.commit()
-            return self._serialize_bot_instance(model)
+            payload = self._serialize_bot_instance(model)
+        if platform_enum == BotPlatform.TELEGRAM and bot_token:
+            try:
+                await self._sync_provider_telegram_default_commands(bot_token)
+            except Exception:
+                logger.warning(
+                    "Provider Telegram command registration failed for bot %s.",
+                    payload["code"],
+                    exc_info=True,
+                )
+        return payload
+
+    async def sync_provider_telegram_bot_commands(self) -> None:
+        async with self._session_factory() as session:
+            rows = await self._repository(session).list_active_platform_bots(BotPlatform.TELEGRAM)
+            bot_tokens = [row.bot_token for row in rows if row.bot_token]
+        for bot_token in bot_tokens:
+            try:
+                await self._sync_provider_telegram_default_commands(bot_token)
+            except Exception:
+                logger.warning(
+                    "Provider Telegram command registration failed during startup sync.",
+                    exc_info=True,
+                )
 
     async def create_client(
         self,
@@ -1426,9 +1457,10 @@ class ControlPlaneService:
             provider = await self._repository(session).get_provider_by_id(bot_instance.provider_id)
             if provider is None:
                 raise DomainValidationError("Provider bot is not linked to a provider.")
+            provider_id = provider.id
             repository = self._repository(session)
             member = await repository.get_active_member_by_telegram_id(
-                provider.id, message.from_user.telegram_id
+                provider_id, message.from_user.telegram_id
             )
             parsed = parse_provider_bot_input(message.text)
             try:
@@ -1445,6 +1477,22 @@ class ControlPlaneService:
             except (AuthorizationError, DomainValidationError) as exc:
                 await session.rollback()
                 result = ProviderBotCommandResult(texts=[str(exc)])
+            linked_member = await repository.get_active_member_by_telegram_id(
+                provider_id, message.from_user.telegram_id
+            )
+            try:
+                await self._sync_provider_telegram_chat_commands(
+                    bot_token,
+                    message.chat_id,
+                    linked_member,
+                )
+            except Exception:
+                logger.warning(
+                    "Provider Telegram chat command sync failed for provider %s chat %s.",
+                    provider.slug,
+                    message.chat_id,
+                    exc_info=True,
+                )
 
             if result.photo_bytes and result.photo_filename and result.photo_caption:
                 await self._send_provider_bot_photo(
@@ -2054,6 +2102,28 @@ class ControlPlaneService:
 
     def _staff_login_prompt(self) -> str:
         return "This command is for linked provider staff. Use /login <actor_code> <api_key>."
+
+    async def _sync_provider_telegram_default_commands(self, bot_token: str | None) -> None:
+        if not bot_token:
+            return
+        client = TelegramBotClient(bot_token=bot_token, http_client=self._http_client)
+        await client.set_my_commands(to_telegram_menu_payload(provider_public_commands()))
+
+    async def _sync_provider_telegram_chat_commands(
+        self,
+        bot_token: str | None,
+        chat_id: int,
+        member: ProviderMemberModel | None,
+    ) -> None:
+        if not bot_token:
+            return
+        role = ProviderMemberRole(member.role) if member is not None else None
+        commands = provider_staff_commands(role) if role is not None else provider_public_commands()
+        client = TelegramBotClient(bot_token=bot_token, http_client=self._http_client)
+        await client.set_my_commands(
+            to_telegram_menu_payload(commands),
+            scope={"type": "chat", "chat_id": chat_id},
+        )
 
     def _format_bot_public_handle(
         self,

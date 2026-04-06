@@ -285,9 +285,9 @@ def parse_provider_bot_input(text: str | None) -> ProviderBotParsedInput:
             role=parts[2].strip(),
             display_name=parts[3].strip(),
         )
-    if command == "/item-code":
+    if command in {"/item-code", "/item_code"}:
         if len(parts) < 2:
-            return ProviderBotMalformedCommand("item-code", "/item-code <code> [amount]")
+            return ProviderBotMalformedCommand("item_code", "/item_code <code> [amount]")
         amount = parts[2].strip() if len(parts) > 2 else None
         return ProviderBotItemCodeCommand(item_code=parts[1].strip(), amount=amount)
     if command == "/pay":

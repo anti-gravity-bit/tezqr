@@ -9,6 +9,7 @@ def test_build_bot_welcome_message_includes_staff_login_hint() -> None:
 
     message = composer.build_bot_welcome_message("Orbit Pay", {"logo_text": "OP"})
 
+    assert "/item_code <code> [amount]" in message
     assert "/login <actor_code> <api_key>" in message
     assert "Provider staff can link this chat" in message
 

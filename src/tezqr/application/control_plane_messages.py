@@ -63,7 +63,7 @@ class ProviderMessageComposer:
         lines = [
             f"{provider_name} {logo_text}\n\n"
             "Commands:\n"
-            "/item-code <code> [amount] - get a product or service QR\n"
+            "/item_code <code> [amount] - get a product or service QR\n"
             "/pay <amount> <description> - create a custom payment QR\n"
             "/login <actor_code> <api_key> - link this chat to a provider role"
         ]

@@ -119,6 +119,7 @@ class FakeTelegramGateway(TelegramGateway):
         self.photo_reference_messages: list[dict] = []
         self.copied_messages: list[dict] = []
         self.webhooks: list[str] = []
+        self.command_sets: list[dict] = []
 
     async def send_text(
         self,
@@ -176,6 +177,21 @@ class FakeTelegramGateway(TelegramGateway):
 
     async def set_webhook(self, url: str) -> None:
         self.webhooks.append(url)
+
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        self.command_sets.append({"commands": commands, "scope": scope})
+
+    async def delete_my_commands(
+        self,
+        *,
+        scope: dict[str, object] | None = None,
+    ) -> None:
+        return None
 
 
 class FakeQrCodeGenerator(QrCodeGenerator):

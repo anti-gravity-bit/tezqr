@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from asgi_lifespan import LifespanManager
@@ -394,6 +396,16 @@ async def test_provider_telegram_bot_webhook_onboards_client_and_serves_item_cod
     urls = [call["url"] for call in recording_transport.calls]
     assert any("bravo-telegram-token/sendMessage" in url for url in urls)
     assert any("bravo-telegram-token/sendPhoto" in url for url in urls)
+    command_calls = [
+        json.loads(call["body"])
+        for call in recording_transport.calls
+        if "bravo-telegram-token/setMyCommands" in call["url"]
+    ]
+    assert any(call.get("scope") is None for call in command_calls)
+    assert any(
+        any(command["command"] == "item_code" for command in call["commands"])
+        for call in command_calls
+    )
 
 
 @pytest.mark.asyncio
@@ -585,6 +597,24 @@ async def test_provider_telegram_bot_rbac_commands_support_staff_workflows(
     assert any("Delivery: sent" in body for body in send_message_bodies)
     assert any(
         "orbit-telegram-token/sendPhoto" in call["url"] for call in recording_transport.calls
+    )
+    command_calls = [
+        json.loads(call["body"])
+        for call in recording_transport.calls
+        if "orbit-telegram-token/setMyCommands" in call["url"]
+    ]
+    assert any(call.get("scope") is None for call in command_calls)
+    assert any(call.get("scope") == {"type": "chat", "chat_id": 9101} for call in command_calls)
+    assert any(call.get("scope") == {"type": "chat", "chat_id": 9202} for call in command_calls)
+    assert any(
+        any(command["command"] == "memberadd" for command in call["commands"])
+        for call in command_calls
+        if call.get("scope") == {"type": "chat", "chat_id": 9101}
+    )
+    assert any(
+        any(command["command"] == "runreminders" for command in call["commands"])
+        for call in command_calls
+        if call.get("scope") == {"type": "chat", "chat_id": 9202}
     )
 
 

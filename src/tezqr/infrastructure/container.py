@@ -9,6 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from tezqr.application.control_plane import ControlPlaneService
 from tezqr.application.ports import AbstractUnitOfWork
 from tezqr.application.services import BotService
+from tezqr.application.telegram_menu_commands import (
+    legacy_admin_commands,
+    legacy_public_commands,
+    to_telegram_menu_payload,
+)
 from tezqr.infrastructure.persistence.uow import SQLAlchemyUnitOfWork
 from tezqr.infrastructure.qr.generator import QRCodeGeneratorService
 from tezqr.infrastructure.telegram.client import TelegramBotClient
@@ -29,6 +34,20 @@ class AppContainer:
     control_plane_service: ControlPlaneService | None = None
 
     async def startup(self) -> None:
+        if self.telegram_client is not None:
+            try:
+                await self.telegram_client.set_my_commands(
+                    to_telegram_menu_payload(legacy_public_commands())
+                )
+                await self.telegram_client.set_my_commands(
+                    to_telegram_menu_payload(legacy_admin_commands()),
+                    scope={"type": "chat", "chat_id": self.settings.admin_telegram_id},
+                )
+            except Exception:
+                logger.warning(
+                    "Legacy Telegram command registration skipped after failure.",
+                    exc_info=True,
+                )
         if (
             self.settings.app_env != "production"
             and self.settings.auto_register_webhook
@@ -40,6 +59,14 @@ class AppContainer:
             except Exception:
                 logger.warning(
                     "Telegram webhook auto-registration skipped after failure.",
+                    exc_info=True,
+                )
+        if self.control_plane_service is not None:
+            try:
+                await self.control_plane_service.sync_provider_telegram_bot_commands()
+            except Exception:
+                logger.warning(
+                    "Provider Telegram command registration skipped after failure.",
                     exc_info=True,
                 )
 

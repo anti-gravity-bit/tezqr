@@ -475,7 +475,7 @@ Supported bot commands:
 - `/login <actor_code> <api_key>`
 - `/whoami`
 - `/onboardlink`
-- `/item-code <code> [amount]`
+- `/item_code <code> [amount]` on Telegram menu, `/item-code <code> [amount]` also works
 - `/pay <amount> <description>`
 - `/dashboard`
 - `/clients`
@@ -508,7 +508,7 @@ Current behavior:
 - supports `/whoami`, `/onboardlink`, `/dashboard`, `/clients`, `/payments`, and `/history`
 - supports `/charge`, `/share`, `/status`, `/note`, `/remind`, and `/runreminders` for linked staff
 - creates or updates the client automatically
-- supports `/item-code <code> [amount]`
+- supports `/item_code <code> [amount]` on Telegram menu, while also accepting `/item-code <code> [amount]`
 - supports `/pay <amount> <description>`
 - returns payment text plus a `wa.me` share URL
 
