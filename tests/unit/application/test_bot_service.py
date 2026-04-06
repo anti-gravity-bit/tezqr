@@ -50,9 +50,7 @@ class FakeMerchantRepository:
 
     async def list_telegram_ids(self, *, exclude_telegram_id: int | None = None) -> list[int]:
         return sorted(
-            telegram_id
-            for telegram_id in self.records
-            if telegram_id != exclude_telegram_id
+            telegram_id for telegram_id in self.records if telegram_id != exclude_telegram_id
         )
 
 
@@ -294,9 +292,9 @@ async def test_pay_generates_twentieth_free_qr_then_blocks_next_request(
     assert len(fake_uow.payment_requests.records) == 1
     assert len(fake_gateway.photo_messages) == 1
     assert "TezQR Payment Pass" in fake_gateway.photo_messages[0]["caption"]
-    assert "Fast checkout. Clean records. Zero confusion." in fake_gateway.photo_messages[0][
-        "caption"
-    ]
+    assert (
+        "Fast checkout. Clean records. Zero confusion." in fake_gateway.photo_messages[0]["caption"]
+    )
 
     await service.handle_message(make_message(text="/pay 99 Another order", message_id=2))
     assert len(fake_uow.payment_requests.records) == 1
@@ -340,8 +338,7 @@ async def test_paywall_screenshot_creates_upgrade_request_and_notifies_admin(
     assert "Request code:" in fake_gateway.text_messages[0]["text"]
     assert fake_gateway.text_messages[-1]["chat_id"] == 9999
     assert (
-        f"/approve {upgrade_request.approval_code.value}"
-        in fake_gateway.text_messages[-1]["text"]
+        f"/approve {upgrade_request.approval_code.value}" in fake_gateway.text_messages[-1]["text"]
     )
 
 

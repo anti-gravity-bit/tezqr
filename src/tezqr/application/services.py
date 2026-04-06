@@ -1,3 +1,5 @@
+"""Legacy Telegram merchant bot application service."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -64,6 +66,14 @@ from tezqr.shared.time import current_local_day_bounds, utc_now
 
 
 class BotService:
+    """Handle the original TezQR merchant bot workflow.
+
+    This service preserves the simpler merchant-facing product surface while the
+    provider control plane grows alongside it. The bot logic still follows the same
+    application-service role: parse transport DTOs, load aggregates through the unit
+    of work, apply domain rules, and delegate outbound delivery to ports.
+    """
+
     def __init__(
         self,
         *,

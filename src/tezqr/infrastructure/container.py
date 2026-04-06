@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from tezqr.application.control_plane import ControlPlaneService
 from tezqr.application.ports import AbstractUnitOfWork
 from tezqr.application.services import BotService
 from tezqr.infrastructure.persistence.uow import SQLAlchemyUnitOfWork
@@ -22,14 +23,17 @@ class AppContainer:
     settings: Settings
     engine: AsyncEngine
     session_factory: async_sessionmaker[AsyncSession]
-    telegram_client: TelegramBotClient
-    bot_service: BotService
+    telegram_client: TelegramBotClient | None
+    bot_service: BotService | None
+    http_client: httpx.AsyncClient | None = None
+    control_plane_service: ControlPlaneService | None = None
 
     async def startup(self) -> None:
         if (
             self.settings.app_env != "production"
             and self.settings.auto_register_webhook
             and self.settings.webhook_url
+            and self.telegram_client is not None
         ):
             try:
                 await self.telegram_client.set_webhook(self.settings.webhook_url)
@@ -40,7 +44,10 @@ class AppContainer:
                 )
 
     async def shutdown(self) -> None:
-        await self.telegram_client.aclose()
+        if self.telegram_client is not None:
+            await self.telegram_client.aclose()
+        elif self.http_client is not None:
+            await self.http_client.aclose()
         await self.engine.dispose()
 
 
@@ -49,6 +56,7 @@ def build_container(settings: Settings) -> AppContainer:
     session_factory = build_async_session_factory(engine)
     http_client = httpx.AsyncClient(timeout=20.0)
     telegram_client = TelegramBotClient(settings=settings, http_client=http_client)
+    qr_generator = QRCodeGeneratorService()
 
     def uow_factory() -> AbstractUnitOfWork:
         return SQLAlchemyUnitOfWork(session_factory)
@@ -56,7 +64,13 @@ def build_container(settings: Settings) -> AppContainer:
     bot_service = BotService(
         uow_factory=uow_factory,
         telegram_gateway=telegram_client,
-        qr_generator=QRCodeGeneratorService(),
+        qr_generator=qr_generator,
+        settings=settings,
+    )
+    control_plane_service = ControlPlaneService(
+        session_factory=session_factory,
+        qr_generator=qr_generator,
+        http_client=http_client,
         settings=settings,
     )
     return AppContainer(
@@ -65,4 +79,6 @@ def build_container(settings: Settings) -> AppContainer:
         session_factory=session_factory,
         telegram_client=telegram_client,
         bot_service=bot_service,
+        http_client=http_client,
+        control_plane_service=control_plane_service,
     )

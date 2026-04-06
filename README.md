@@ -2,6 +2,8 @@
 
 TezQR is a headless Telegram bot micro-SaaS for Indian SMBs. Merchants register a UPI VPA, request payment QR codes through Telegram commands, and move to a paid 1000-QR pack through a concierge upgrade flow.
 
+The codebase now also includes a provider control plane for white-label payment operations. Providers can manage clients, bot instances, templates, payment requests, reminders, exports, and branded QR assets through the HTTP API.
+
 ## Core Commands
 
 - `/start`
@@ -15,6 +17,45 @@ TezQR is a headless Telegram bot micro-SaaS for Indian SMBs. Merchants register 
 1. Copy `.env.example` to `.env` and fill in secrets.
 2. Start dependencies with `docker compose -f docker-compose-local.yml up --build`.
 3. Run tests with `uv sync --dev && uv run pytest`.
+
+## Architecture
+
+The project follows a layered structure aimed at readability and incremental scalability:
+
+- Model: domain entities, value objects, enums, and SQLAlchemy persistence models
+- View: FastAPI routes plus Pydantic schemas
+- Controller: thin HTTP/webhook adapters under `src/tezqr/presentation/controllers`
+- Service: application orchestration in `src/tezqr/application`
+- Repository: persistence adapters in `src/tezqr/infrastructure/persistence`
+
+Two product surfaces currently coexist:
+
+- the legacy Telegram merchant bot flow
+- the provider control plane for white-label Telegram and WhatsApp payment operations
+
+This split keeps historic behavior intact while allowing the provider feature set to scale independently.
+
+## Documentation
+
+Repo documentation now lives under `docs/`:
+
+- `docs/index.md` for the docs hub
+- `docs/product-tutorial.md` for the full product walkthrough
+- `docs/architecture.md` for the technical architecture guide
+- `docs/learning-roadmap.md` for the FastAPI backend learning plan based on this repo
+- `docs/deployment.md` for deployment
+- `docs/github-actions.md` for CI/CD
+
+## API Docs
+
+FastAPI serves interactive Swagger documentation at `/docs` and ReDoc at `/redoc`.
+
+The Swagger contract includes:
+
+- system endpoints
+- the legacy merchant bot webhook
+- provider bot webhooks
+- provider control-plane APIs for onboarding, payments, reminders, exports, and QR assets
 
 The local stack is webhook-only. Use a tunnel or send webhook payloads directly to `POST /webhooks/telegram/{secret}` for testing.
 

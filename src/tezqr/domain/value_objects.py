@@ -13,6 +13,54 @@ _TWO_PLACES = Decimal("0.01")
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderSlug:
+    value: str
+
+    _PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+    def __post_init__(self) -> None:
+        normalized = self.value.strip().lower()
+        if len(normalized) < 3 or len(normalized) > 64 or not self._PATTERN.fullmatch(normalized):
+            raise DomainValidationError(
+                "Provider slug must be 3-64 characters of lowercase letters, numbers, and hyphens."
+            )
+        object.__setattr__(self, "value", normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class PhoneNumber:
+    value: str
+
+    _PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^\+?[1-9][0-9]{9,14}$")
+
+    def __post_init__(self) -> None:
+        digits_only = re.sub(r"[^\d+]", "", self.value.strip())
+        if not self._PATTERN.fullmatch(digits_only):
+            raise DomainValidationError("Phone number must be a valid international number.")
+        object.__setattr__(self, "value", digits_only)
+
+    @property
+    def wa_id(self) -> str:
+        return self.value.lstrip("+")
+
+
+@dataclass(frozen=True, slots=True)
+class ItemCode:
+    value: str
+
+    _PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^[A-Z0-9][A-Z0-9._/-]{1,31}$")
+
+    def __post_init__(self) -> None:
+        normalized = self.value.strip().upper()
+        if not self._PATTERN.fullmatch(normalized):
+            raise DomainValidationError(
+                "Item code must be 2-32 characters of letters, numbers, dot, slash, "
+                "underscore, or hyphen."
+            )
+        object.__setattr__(self, "value", normalized)
+
+
+@dataclass(frozen=True, slots=True)
 class UpiVpa:
     value: str
 

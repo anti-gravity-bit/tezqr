@@ -46,7 +46,10 @@ async def db_session_factory(postgres_database_url: str) -> async_sessionmaker:
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                "TRUNCATE TABLE upgrade_requests, payment_requests, merchants "
+                "TRUNCATE TABLE outbound_messages, qr_assets, payment_logs, payment_notes, "
+                "payment_reminders, payment_requests, payment_templates, clients, "
+                "payment_destinations, provider_bot_instances, provider_members, providers, "
+                "upgrade_requests, merchants "
                 "RESTART IDENTITY CASCADE"
             )
         )

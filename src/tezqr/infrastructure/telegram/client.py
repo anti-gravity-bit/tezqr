@@ -7,9 +7,18 @@ from tezqr.shared.config import Settings
 
 
 class TelegramBotClient(TelegramGateway):
-    def __init__(self, *, settings: Settings, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        *,
+        http_client: httpx.AsyncClient,
+        settings: Settings | None = None,
+        bot_token: str | None = None,
+    ) -> None:
         self._settings = settings
+        self._bot_token = bot_token or (settings.telegram_bot_token if settings else None)
         self._http_client = http_client
+        if not self._bot_token:
+            raise ValueError("A Telegram bot token is required.")
 
     async def aclose(self) -> None:
         await self._http_client.aclose()
@@ -94,7 +103,7 @@ class TelegramBotClient(TelegramGateway):
         self._raise_for_telegram_error(response)
 
     def _build_url(self, method: str) -> str:
-        return f"{self._settings.telegram_api_base_url}/{method}"
+        return f"https://api.telegram.org/bot{self._bot_token}/{method}"
 
     @staticmethod
     def _raise_for_telegram_error(response: httpx.Response) -> None:
