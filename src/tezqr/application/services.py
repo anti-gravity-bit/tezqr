@@ -15,6 +15,16 @@ from tezqr.application.commands import (
     MalformedCommand,
     PayCommand,
     PlainTextMessage,
+    ProviderBotCommand,
+    ProviderBotsCommand,
+    ProviderClientsCommand,
+    ProviderDestinationCommand,
+    ProviderMeCommand,
+    ProviderMembersCommand,
+    ProviderOverviewCommand,
+    ProviderPaymentsCommand,
+    ProviderRegisterCommand,
+    ProvidersCommand,
     ScreenshotSubmission,
     SetupiCommand,
     StartCommand,
@@ -23,6 +33,7 @@ from tezqr.application.commands import (
     UpgradeCommand,
     parse_message,
 )
+from tezqr.application.control_plane import ControlPlaneService
 from tezqr.application.dto import IncomingMessage
 from tezqr.application.ports import QrCodeGenerator, TelegramGateway, UnitOfWorkFactory
 from tezqr.application.replies import (
@@ -59,7 +70,11 @@ from tezqr.domain.entities import (
     UpgradeRequest,
 )
 from tezqr.domain.enums import MerchantTier
-from tezqr.domain.exceptions import DomainValidationError, MerchantSetupRequiredError
+from tezqr.domain.exceptions import (
+    AuthorizationError,
+    DomainValidationError,
+    MerchantSetupRequiredError,
+)
 from tezqr.domain.value_objects import Money, UpiVpa
 from tezqr.shared.config import Settings
 from tezqr.shared.time import current_local_day_bounds, utc_now
@@ -81,12 +96,14 @@ class BotService:
         telegram_gateway: TelegramGateway,
         qr_generator: QrCodeGenerator,
         settings: Settings,
+        control_plane_service: ControlPlaneService | None = None,
         now_provider: Callable[[], datetime] = utc_now,
     ) -> None:
         self._uow_factory = uow_factory
         self._telegram_gateway = telegram_gateway
         self._qr_generator = qr_generator
         self._settings = settings
+        self._control_plane_service = control_plane_service
         self._now_provider = now_provider
 
     async def handle_message(self, message: IncomingMessage) -> None:
@@ -139,6 +156,36 @@ class BotService:
             return
         if isinstance(parsed, UpgradeCommand):
             await self._handle_upgrade(message, parsed)
+            return
+        if isinstance(parsed, ProviderRegisterCommand):
+            await self._handle_provider_register(message, parsed)
+            return
+        if isinstance(parsed, ProviderBotCommand):
+            await self._handle_provider_bot(message, parsed)
+            return
+        if isinstance(parsed, ProviderDestinationCommand):
+            await self._handle_provider_destination(message, parsed)
+            return
+        if isinstance(parsed, ProviderMeCommand):
+            await self._handle_provider_me(message)
+            return
+        if isinstance(parsed, ProvidersCommand):
+            await self._handle_admin_providers(message)
+            return
+        if isinstance(parsed, ProviderOverviewCommand):
+            await self._handle_admin_provider_overview(message, parsed)
+            return
+        if isinstance(parsed, ProviderMembersCommand):
+            await self._handle_admin_provider_members(message, parsed)
+            return
+        if isinstance(parsed, ProviderBotsCommand):
+            await self._handle_admin_provider_bots(message, parsed)
+            return
+        if isinstance(parsed, ProviderClientsCommand):
+            await self._handle_admin_provider_clients(message, parsed)
+            return
+        if isinstance(parsed, ProviderPaymentsCommand):
+            await self._handle_admin_provider_payments(message, parsed)
             return
 
     async def _handle_start(self, message: IncomingMessage) -> None:
@@ -466,6 +513,423 @@ class BotService:
             reply_to_message_id=message.message_id,
         )
 
+    async def _handle_provider_register(
+        self,
+        message: IncomingMessage,
+        command: ProviderRegisterCommand,
+    ) -> None:
+        control_plane = self._require_control_plane_service()
+        try:
+            payload = await control_plane.create_provider_from_telegram(
+                slug=command.slug,
+                name=command.provider_name,
+                owner_telegram_id=message.from_user.telegram_id,
+                owner_display_name=message.from_user.display_name,
+                owner_telegram_username=message.from_user.username,
+            )
+        except (AuthorizationError, DomainValidationError) as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+
+        text = (
+            "Provider workspace created\n\n"
+            f"Name: {payload['name']}\n"
+            f"Slug: {payload['slug']}\n"
+            f"Owner actor: {payload['owner_actor_code']}\n"
+            f"API key: {payload['api_key']}\n\n"
+            "Next steps:\n"
+            f"1. /provider_bot {payload['slug']} <bot_token> [public_handle]\n"
+            f"2. /provider_destination {payload['slug']} MAIN <vpa> <payee_name>\n"
+            "3. Open your provider bot and send /start"
+        )
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            text,
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_provider_bot(
+        self,
+        message: IncomingMessage,
+        command: ProviderBotCommand,
+    ) -> None:
+        control_plane = self._require_control_plane_service()
+        try:
+            payload = await control_plane.create_bot_instance_from_telegram_owner(
+                provider_slug=command.provider_slug,
+                owner_telegram_id=message.from_user.telegram_id,
+                bot_token=command.bot_token,
+                public_handle=command.public_handle,
+            )
+        except (AuthorizationError, DomainValidationError) as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+
+        lines = [
+            "Provider Telegram bot created",
+            "",
+            f"Provider slug: {command.provider_slug}",
+            f"Bot code: {payload['code']}",
+        ]
+        if payload.get("public_handle"):
+            lines.append(f"Public handle: {payload['public_handle']}")
+        if payload.get("webhook_url"):
+            lines.append(f"Webhook URL: {payload['webhook_url']}")
+        if payload.get("webhook_registration") == "configured":
+            lines.append("Webhook: configured")
+        elif payload.get("webhook_registration") == "manual_required":
+            lines.append("Webhook: manual setup required")
+        lines.extend(
+            [
+                "",
+                "Your Telegram account is already linked as the provider owner.",
+                "Open the provider bot and send /start to see the role-based menu.",
+            ]
+        )
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            "\n".join(lines),
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_provider_destination(
+        self,
+        message: IncomingMessage,
+        command: ProviderDestinationCommand,
+    ) -> None:
+        control_plane = self._require_control_plane_service()
+        try:
+            payload = await control_plane.create_payment_destination_from_telegram_member(
+                provider_slug=command.provider_slug,
+                telegram_id=message.from_user.telegram_id,
+                code=command.code,
+                vpa=command.vpa,
+                payee_name=command.payee_name,
+                is_default=True,
+            )
+        except (AuthorizationError, DomainValidationError) as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            (
+                "Provider destination saved\n\n"
+                f"Code: {payload['code']}\n"
+                f"UPI ID: {payload['vpa']}\n"
+                f"Payee name: {payload['payee_name']}\n"
+                f"Default: {'yes' if payload['is_default'] else 'no'}"
+            ),
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_provider_me(self, message: IncomingMessage) -> None:
+        control_plane = self._require_control_plane_service()
+        payloads = await control_plane.list_member_workspaces_by_telegram(
+            message.from_user.telegram_id
+        )
+        if not payloads:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                (
+                    "No provider workspaces are linked to your Telegram account yet.\n\n"
+                    "Use /provider_register <slug> <provider_name> to create one."
+                ),
+                reply_to_message_id=message.message_id,
+            )
+            return
+
+        sections = ["Your provider workspaces"]
+        for payload in payloads:
+            provider = payload["provider"]
+            member = payload["member"]
+            destination = payload["default_destination"]
+            section = [
+                "",
+                f"{provider['name']} ({provider['slug']})",
+                f"Role: {member['role']}",
+                f"Actor: {member['actor_code']}",
+                f"API key: {payload['api_key']}",
+                f"Telegram bots: {payload['bot_count']}",
+                f"Clients: {payload['client_count']}",
+            ]
+            if destination is not None:
+                section.append(
+                    f"Default destination: {destination['code']} -> {destination['vpa']}"
+                )
+            else:
+                section.append(
+                    "Default destination: missing\n"
+                    f"Use /provider_destination {provider['slug']} MAIN <vpa> "
+                    "<payee_name>"
+                )
+            sections.extend(section)
+
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            "\n".join(sections),
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_admin_providers(self, message: IncomingMessage) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        control_plane = self._require_control_plane_service()
+        rows = await control_plane.list_all_providers_for_admin()
+        if not rows:
+            text = "No provider workspaces have been created yet."
+        else:
+            lines = ["Provider workspaces"]
+            for row in rows:
+                provider = row["provider"]
+                lines.extend(
+                    [
+                        "",
+                        f"{provider['name']} ({provider['slug']})",
+                        f"Members: {row['member_count']}",
+                        f"Bots: {row['bot_count']}",
+                        f"Clients: {row['client_count']}",
+                        "Pending/Paid/Overdue: "
+                        f"{row['pending_payments']}/"
+                        f"{row['paid_payments']}/"
+                        f"{row['overdue_payments']}",
+                        f"Scheduled reminders: {row['scheduled_reminders']}",
+                    ]
+                )
+            text = "\n".join(lines)
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            text,
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_admin_provider_overview(
+        self,
+        message: IncomingMessage,
+        command: ProviderOverviewCommand,
+    ) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        control_plane = self._require_control_plane_service()
+        try:
+            payload = await control_plane.get_provider_overview_for_admin(command.provider_slug)
+        except DomainValidationError as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        provider = payload["provider"]
+        lines = [
+            "Provider overview",
+            "",
+            f"Name: {provider['name']}",
+            f"Slug: {provider['slug']}",
+            f"API key: {provider['api_key']}",
+            f"Members: {payload['member_count']}",
+            f"Bots: {payload['bot_count']}",
+            f"Clients: {payload['client_count']}",
+            f"Templates: {payload['template_count']}",
+            "Pending/Paid/Overdue: "
+            f"{payload['pending_payments']}/"
+            f"{payload['paid_payments']}/"
+            f"{payload['overdue_payments']}",
+            f"Scheduled reminders: {payload['scheduled_reminders']}",
+        ]
+        if payload["default_destination"] is not None:
+            lines.append(
+                "Default destination: "
+                f"{payload['default_destination']['code']} -> "
+                f"{payload['default_destination']['vpa']}"
+            )
+        if payload["members"]:
+            lines.append(
+                "Members: "
+                + ", ".join(row["actor_code"] for row in payload["members"][:5])
+            )
+        if payload["bots"]:
+            lines.append("Bots: " + ", ".join(row["code"] for row in payload["bots"][:5]))
+        if payload["recent_payments"]:
+            recent = ", ".join(
+                row["payment"]["reference"] for row in payload["recent_payments"][:5]
+            )
+            lines.append(f"Recent payments: {recent}")
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            "\n".join(lines),
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _handle_admin_provider_members(
+        self,
+        message: IncomingMessage,
+        command: ProviderMembersCommand,
+    ) -> None:
+        await self._send_admin_provider_listing(
+            message,
+            provider_slug=command.provider_slug,
+            title="Provider members",
+            loader=lambda: self._require_control_plane_service().list_provider_members_for_admin(
+                command.provider_slug
+            ),
+            formatter=lambda row: (
+                f"{row['actor_code']} ({row['role']}) - {row['display_name']}"
+                + (f" - TG {row['telegram_id']}" if row["telegram_id"] else "")
+            ),
+        )
+
+    async def _handle_admin_provider_bots(
+        self,
+        message: IncomingMessage,
+        command: ProviderBotsCommand,
+    ) -> None:
+        await self._send_admin_provider_listing(
+            message,
+            provider_slug=command.provider_slug,
+            title="Provider bots",
+            loader=lambda: self._require_control_plane_service().list_provider_bots_for_admin(
+                command.provider_slug
+            ),
+            formatter=lambda row: (
+                f"{row['code']} ({row['platform']}) - {row['display_name']}"
+                + (f" - {row['public_handle']}" if row["public_handle"] else "")
+            ),
+        )
+
+    async def _handle_admin_provider_clients(
+        self,
+        message: IncomingMessage,
+        command: ProviderClientsCommand,
+    ) -> None:
+        await self._send_admin_provider_listing(
+            message,
+            provider_slug=command.provider_slug,
+            title="Provider clients",
+            loader=lambda: self._require_control_plane_service().list_provider_clients_for_admin(
+                command.provider_slug
+            ),
+            formatter=lambda row: (
+                f"{row['code']} - {row['full_name']}"
+                + (f" - @{row['telegram_username']}" if row["telegram_username"] else "")
+                + (
+                    f" - {row['whatsapp_number']}"
+                    if row["whatsapp_number"]
+                    else ""
+                )
+            ),
+        )
+
+    async def _handle_admin_provider_payments(
+        self,
+        message: IncomingMessage,
+        command: ProviderPaymentsCommand,
+    ) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        control_plane = self._require_control_plane_service()
+        try:
+            rows = await control_plane.list_provider_payments_for_admin(
+                command.provider_slug,
+                client_code=command.client_code,
+            )
+        except DomainValidationError as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        if not rows:
+            text = f"No payments were found for provider {command.provider_slug}."
+        else:
+            lines = [f"Provider payments for {command.provider_slug}"]
+            for row in rows[:20]:
+                payment = row["payment"]
+                lines.extend(
+                    [
+                        "",
+                        f"{payment['reference']} - Rs {payment['amount']} - {payment['status']}",
+                        f"Description: {payment['description']}",
+                        f"Client: {row['client_name'] or 'walk-in'}",
+                    ]
+                )
+            if len(rows) > 20:
+                lines.append(f"\n... and {len(rows) - 20} more")
+            text = "\n".join(lines)
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            text,
+            reply_to_message_id=message.message_id,
+        )
+
+    async def _send_admin_provider_listing(
+        self,
+        message: IncomingMessage,
+        *,
+        provider_slug: str,
+        title: str,
+        loader,
+        formatter,
+    ) -> None:
+        if not self._is_admin(message.from_user.telegram_id):
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                admin_only_message(),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        try:
+            rows = await loader()
+        except DomainValidationError as exc:
+            await self._telegram_gateway.send_text(
+                message.chat_id,
+                str(exc),
+                reply_to_message_id=message.message_id,
+            )
+            return
+        if not rows:
+            text = f"No rows were found for provider {provider_slug}."
+        else:
+            lines = [f"{title} for {provider_slug}"]
+            for row in rows[:20]:
+                lines.append(f"\n{formatter(row)}")
+            if len(rows) > 20:
+                lines.append(f"\n... and {len(rows) - 20} more")
+            text = "\n".join(lines)
+        await self._telegram_gateway.send_text(
+            message.chat_id,
+            text,
+            reply_to_message_id=message.message_id,
+        )
+
     async def _record_existing_merchant_command(self, message: IncomingMessage) -> None:
         now = self._now_provider()
         async with self._uow_factory() as uow:
@@ -479,6 +943,11 @@ class BotService:
 
     def _is_admin(self, telegram_id: int) -> bool:
         return telegram_id == self._settings.admin_telegram_id
+
+    def _require_control_plane_service(self) -> ControlPlaneService:
+        if self._control_plane_service is None:
+            raise DomainValidationError("Provider tools are unavailable right now.")
+        return self._control_plane_service
 
     async def _send_paywall_response(
         self,

@@ -38,6 +38,13 @@ class SQLAlchemyProviderControlRepository:
             select(ProviderModel).where(ProviderModel.slug == provider_slug)
         )
 
+    async def list_providers(self) -> list[ProviderModel]:
+        return (
+            await self._session.scalars(
+                select(ProviderModel).order_by(ProviderModel.created_at.asc())
+            )
+        ).all()
+
     async def get_active_member(
         self,
         provider_id: UUID,
@@ -76,6 +83,34 @@ class SQLAlchemyProviderControlRepository:
                 ProviderMemberModel.is_active.is_(True),
             )
         )
+
+    async def list_active_members_by_telegram_id(
+        self,
+        telegram_id: int,
+    ) -> list[tuple[ProviderMemberModel, ProviderModel]]:
+        return (
+            await self._session.execute(
+                select(ProviderMemberModel, ProviderModel)
+                .join(ProviderModel, ProviderModel.id == ProviderMemberModel.provider_id)
+                .where(
+                    ProviderMemberModel.telegram_id == telegram_id,
+                    ProviderMemberModel.is_active.is_(True),
+                )
+                .order_by(ProviderModel.created_at.asc(), ProviderMemberModel.created_at.asc())
+            )
+        ).all()
+
+    async def list_members(
+        self,
+        provider_id: UUID,
+    ) -> list[ProviderMemberModel]:
+        return (
+            await self._session.scalars(
+                select(ProviderMemberModel)
+                .where(ProviderMemberModel.provider_id == provider_id)
+                .order_by(ProviderMemberModel.created_at.asc())
+            )
+        ).all()
 
     async def clear_default_destinations(self, provider_id: UUID) -> None:
         rows = (
@@ -168,6 +203,18 @@ class SQLAlchemyProviderControlRepository:
                     ProviderBotInstanceModel.platform == platform.value,
                     ProviderBotInstanceModel.is_active.is_(True),
                 )
+                .order_by(ProviderBotInstanceModel.created_at.asc())
+            )
+        ).all()
+
+    async def list_bot_instances(
+        self,
+        provider_id: UUID,
+    ) -> list[ProviderBotInstanceModel]:
+        return (
+            await self._session.scalars(
+                select(ProviderBotInstanceModel)
+                .where(ProviderBotInstanceModel.provider_id == provider_id)
                 .order_by(ProviderBotInstanceModel.created_at.asc())
             )
         ).all()
@@ -327,6 +374,16 @@ class SQLAlchemyProviderControlRepository:
             or 0
         )
 
+    async def count_members(self, provider_id: UUID) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(ProviderMemberModel.id)).where(
+                    ProviderMemberModel.provider_id == provider_id
+                )
+            )
+            or 0
+        )
+
     async def count_templates(self, provider_id: UUID) -> int:
         return int(
             await self._session.scalar(
@@ -419,3 +476,34 @@ class SQLAlchemyProviderControlRepository:
             )
             .order_by(QrAssetModel.created_at.desc())
         )
+
+    async def list_recent_payments(
+        self,
+        provider_id: UUID,
+        *,
+        limit: int = 10,
+    ) -> list[tuple[PaymentRequestModel, ClientModel | None]]:
+        return (
+            await self._session.execute(
+                select(PaymentRequestModel, ClientModel)
+                .outerjoin(ClientModel, ClientModel.id == PaymentRequestModel.client_id)
+                .where(PaymentRequestModel.provider_id == provider_id)
+                .order_by(PaymentRequestModel.created_at.desc())
+                .limit(limit)
+            )
+        ).all()
+
+    async def list_recent_payments_by_client(
+        self,
+        client_id: UUID,
+        *,
+        limit: int = 10,
+    ) -> list[PaymentRequestModel]:
+        return (
+            await self._session.scalars(
+                select(PaymentRequestModel)
+                .where(PaymentRequestModel.client_id == client_id)
+                .order_by(PaymentRequestModel.created_at.desc())
+                .limit(limit)
+            )
+        ).all()

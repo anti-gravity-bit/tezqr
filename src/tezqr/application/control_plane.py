@@ -173,6 +173,8 @@ class ControlPlaneService:
         logo_text: str | None = None,
         owner_actor_code: str | None = None,
         owner_display_name: str | None = None,
+        owner_telegram_id: int | None = None,
+        owner_telegram_username: str | None = None,
     ) -> dict[str, Any]:
         now = self._now_provider()
         provider = Provider(
@@ -221,6 +223,8 @@ class ControlPlaneService:
                         actor_code=member.actor_code,
                         display_name=member.display_name,
                         role=member.role.value,
+                        telegram_id=owner_telegram_id,
+                        telegram_username=owner_telegram_username,
                         is_active=member.is_active,
                         created_at=member.created_at,
                         updated_at=member.updated_at,
@@ -229,6 +233,27 @@ class ControlPlaneService:
             await session.commit()
 
         return self._serialize_provider(provider, include_api_key=True)
+
+    async def create_provider_from_telegram(
+        self,
+        *,
+        slug: str,
+        name: str,
+        owner_telegram_id: int,
+        owner_display_name: str,
+        owner_telegram_username: str | None = None,
+    ) -> dict[str, Any]:
+        owner_actor_code = "OWNER1"
+        payload = await self.create_provider(
+            slug=slug,
+            name=name,
+            owner_actor_code=owner_actor_code,
+            owner_display_name=owner_display_name,
+            owner_telegram_id=owner_telegram_id,
+            owner_telegram_username=owner_telegram_username,
+        )
+        payload["owner_actor_code"] = owner_actor_code
+        return payload
 
     async def create_member(
         self,
@@ -348,6 +373,17 @@ class ControlPlaneService:
     ) -> dict[str, Any]:
         now = self._now_provider()
         platform_enum = BotPlatform(platform)
+        resolved_public_handle = public_handle
+        if platform_enum == BotPlatform.TELEGRAM and bot_token:
+            try:
+                resolved_public_handle = await self._resolve_telegram_public_handle(
+                    bot_token,
+                    preferred_handle=public_handle,
+                )
+            except Exception as exc:
+                raise DomainValidationError(
+                    "Telegram bot token is invalid or the bot is unreachable."
+                ) from exc
         async with self._session_factory() as session:
             access = await self._authorize(
                 session,
@@ -372,7 +408,7 @@ class ControlPlaneService:
                 display_name=display_name,
                 webhook_secret=secrets.token_urlsafe(18),
                 bot_token=bot_token,
-                public_handle=public_handle,
+                public_handle=resolved_public_handle,
                 branding_override=branding_override,
                 created_at=now,
                 updated_at=now,
@@ -395,7 +431,23 @@ class ControlPlaneService:
             session.add(model)
             await session.commit()
             payload = self._serialize_bot_instance(model)
+        webhook_url = None
         if platform_enum == BotPlatform.TELEGRAM and bot_token:
+            webhook_url = self._provider_bot_webhook_url(payload["webhook_secret"])
+            if webhook_url is not None:
+                try:
+                    client = TelegramBotClient(bot_token=bot_token, http_client=self._http_client)
+                    await client.set_webhook(webhook_url)
+                    payload["webhook_registration"] = "configured"
+                except Exception:
+                    logger.warning(
+                        "Provider Telegram webhook registration failed for bot %s.",
+                        payload["code"],
+                        exc_info=True,
+                    )
+                    payload["webhook_registration"] = "manual_required"
+            else:
+                payload["webhook_registration"] = "manual_required"
             try:
                 await self._sync_provider_telegram_default_commands(bot_token)
             except Exception:
@@ -404,6 +456,7 @@ class ControlPlaneService:
                     payload["code"],
                     exc_info=True,
                 )
+            payload["webhook_url"] = webhook_url
         return payload
 
     async def sync_provider_telegram_bot_commands(self) -> None:
@@ -418,6 +471,208 @@ class ControlPlaneService:
                     "Provider Telegram command registration failed during startup sync.",
                     exc_info=True,
                 )
+
+    async def create_bot_instance_from_telegram_owner(
+        self,
+        *,
+        provider_slug: str,
+        owner_telegram_id: int,
+        bot_token: str,
+        public_handle: str | None = None,
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            provider, member = await self._provider_member_access_by_telegram(
+                session,
+                provider_slug=provider_slug,
+                telegram_id=owner_telegram_id,
+                required_role=ProviderMemberRole.MANAGER,
+            )
+            api_key = provider.api_key
+            actor_code = member.actor_code
+            display_name = provider.name
+        return await self.create_bot_instance(
+            provider_slug=provider_slug,
+            api_key=api_key,
+            actor_code=actor_code,
+            platform=BotPlatform.TELEGRAM.value,
+            display_name=f"{display_name} Bot",
+            public_handle=public_handle,
+            bot_token=bot_token,
+        )
+
+    async def create_payment_destination_from_telegram_member(
+        self,
+        *,
+        provider_slug: str,
+        telegram_id: int,
+        code: str,
+        vpa: str,
+        payee_name: str,
+        is_default: bool = True,
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            provider, member = await self._provider_member_access_by_telegram(
+                session,
+                provider_slug=provider_slug,
+                telegram_id=telegram_id,
+                required_role=ProviderMemberRole.OPERATOR,
+            )
+            api_key = provider.api_key
+            actor_code = member.actor_code
+        return await self.create_payment_destination(
+            provider_slug=provider_slug,
+            api_key=api_key,
+            actor_code=actor_code,
+            code=code,
+            label=payee_name,
+            vpa=vpa,
+            payee_name=payee_name,
+            is_default=is_default,
+        )
+
+    async def list_member_workspaces_by_telegram(
+        self,
+        telegram_id: int,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            rows = await self._repository(session).list_active_members_by_telegram_id(telegram_id)
+            payloads: list[dict[str, Any]] = []
+            for member, provider in rows:
+                default_destination = await self._repository(session).get_active_destination(
+                    provider.id,
+                    None,
+                )
+                bot_count = await self._repository(session).count_bot_instances(provider.id)
+                client_count = await self._repository(session).count_clients(provider.id)
+                payloads.append(
+                    {
+                        "provider": self._serialize_provider_model(provider),
+                        "api_key": provider.api_key,
+                        "member": self._serialize_member(member),
+                        "default_destination": self._serialize_destination(default_destination)
+                        if default_destination is not None
+                        else None,
+                        "bot_count": bot_count,
+                        "client_count": client_count,
+                    }
+                )
+            return payloads
+
+    async def list_all_providers_for_admin(self) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            providers = await self._repository(session).list_providers()
+            payloads: list[dict[str, Any]] = []
+            for provider in providers:
+                payloads.append(await self._admin_provider_summary(session, provider))
+            return payloads
+
+    async def get_provider_overview_for_admin(
+        self,
+        provider_slug: str,
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            provider = await self._repository(session).get_provider_by_slug(provider_slug)
+            if provider is None:
+                raise DomainValidationError(f"Provider {provider_slug} was not found.")
+            payload = await self._admin_provider_summary(session, provider)
+            payload["members"] = [
+                self._serialize_member(row)
+                for row in await self._repository(session).list_members(provider.id)
+            ]
+            payload["bots"] = [
+                self._serialize_bot_instance(row)
+                for row in await self._repository(session).list_bot_instances(provider.id)
+            ]
+            payload["recent_payments"] = [
+                {
+                    "payment": self._serialize_payment(payment),
+                    "client_name": client.full_name if client else None,
+                }
+                for payment, client in await self._repository(session).list_recent_payments(
+                    provider.id,
+                    limit=5,
+                )
+            ]
+            return payload
+
+    async def list_provider_members_for_admin(
+        self,
+        provider_slug: str,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            provider = await self._repository(session).get_provider_by_slug(provider_slug)
+            if provider is None:
+                raise DomainValidationError(f"Provider {provider_slug} was not found.")
+            return [
+                self._serialize_member(row)
+                for row in await self._repository(session).list_members(provider.id)
+            ]
+
+    async def list_provider_bots_for_admin(
+        self,
+        provider_slug: str,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            provider = await self._repository(session).get_provider_by_slug(provider_slug)
+            if provider is None:
+                raise DomainValidationError(f"Provider {provider_slug} was not found.")
+            return [
+                self._serialize_bot_instance(row)
+                for row in await self._repository(session).list_bot_instances(provider.id)
+            ]
+
+    async def list_provider_clients_for_admin(
+        self,
+        provider_slug: str,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            provider = await self._repository(session).get_provider_by_slug(provider_slug)
+            if provider is None:
+                raise DomainValidationError(f"Provider {provider_slug} was not found.")
+            return [
+                self._serialize_client(row)
+                for row in await self._repository(session).list_clients(provider.id)
+            ]
+
+    async def list_provider_payments_for_admin(
+        self,
+        provider_slug: str,
+        *,
+        client_code: str | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            provider = await self._repository(session).get_provider_by_slug(provider_slug)
+            if provider is None:
+                raise DomainValidationError(f"Provider {provider_slug} was not found.")
+            if client_code:
+                client = await self._repository(session).get_client_by_code(
+                    provider.id,
+                    client_code,
+                )
+                if client is None:
+                    raise DomainValidationError(
+                        f"No client found for code {client_code.strip().upper()}."
+                    )
+                return [
+                    {
+                        "payment": self._serialize_payment(payment),
+                        "client_name": client.full_name,
+                    }
+                    for payment in await self._repository(session).list_recent_payments_by_client(
+                        client.id,
+                        limit=20,
+                    )
+                ]
+            return [
+                {
+                    "payment": self._serialize_payment(payment),
+                    "client_name": client.full_name if client else None,
+                }
+                for payment, client in await self._repository(session).list_recent_payments(
+                    provider.id,
+                    limit=20,
+                )
+            ]
 
     async def create_client(
         self,
@@ -2887,6 +3142,87 @@ class ControlPlaneService:
 
     def _build_whatsapp_share_link(self, phone: PhoneNumber, message: str) -> str:
         return self._messages.build_whatsapp_share_link(phone, message)
+
+    async def _provider_member_access_by_telegram(
+        self,
+        session: AsyncSession,
+        *,
+        provider_slug: str,
+        telegram_id: int,
+        required_role: ProviderMemberRole,
+    ) -> tuple[ProviderModel, ProviderMemberModel]:
+        provider = await self._repository(session).get_provider_by_slug(provider_slug)
+        if provider is None:
+            raise DomainValidationError(f"Provider {provider_slug} was not found.")
+        member = await self._repository(session).get_active_member_by_telegram_id(
+            provider.id,
+            telegram_id,
+        )
+        if member is None:
+            raise AuthorizationError(
+                f"Your Telegram account is not linked to provider {provider.slug}."
+            )
+        role = ProviderMemberRole(member.role)
+        if ROLE_RANK[role] < ROLE_RANK[required_role]:
+            raise AuthorizationError(f"This action requires {required_role.value} access.")
+        return provider, member
+
+    async def _admin_provider_summary(
+        self,
+        session: AsyncSession,
+        provider: ProviderModel,
+    ) -> dict[str, Any]:
+        repository = self._repository(session)
+        default_destination = await repository.get_active_destination(provider.id, None)
+        return {
+            "provider": {
+                **self._serialize_provider_model(provider),
+                "api_key": provider.api_key,
+            },
+            "member_count": await repository.count_members(provider.id),
+            "bot_count": await repository.count_bot_instances(provider.id),
+            "client_count": await repository.count_clients(provider.id),
+            "template_count": await repository.count_templates(provider.id),
+            "pending_payments": await repository.count_payments_by_status(
+                provider.id,
+                PaymentStatus.PENDING,
+            ),
+            "paid_payments": await repository.count_payments_by_status(
+                provider.id,
+                PaymentStatus.PAID,
+            ),
+            "overdue_payments": await repository.count_payments_by_status(
+                provider.id,
+                PaymentStatus.OVERDUE,
+            ),
+            "scheduled_reminders": await repository.count_scheduled_reminders(provider.id),
+            "default_destination": self._serialize_destination(default_destination)
+            if default_destination is not None
+            else None,
+        }
+
+    async def _resolve_telegram_public_handle(
+        self,
+        bot_token: str,
+        *,
+        preferred_handle: str | None,
+    ) -> str | None:
+        profile = await TelegramBotClient(
+            bot_token=bot_token,
+            http_client=self._http_client,
+        ).get_me()
+        if preferred_handle:
+            return preferred_handle.strip()
+        username = profile.get("username")
+        if isinstance(username, str) and username.strip():
+            return f"https://t.me/{username.strip()}"
+        return None
+
+    def _provider_bot_webhook_url(self, webhook_secret: str) -> str | None:
+        if not self._settings.app_domain:
+            return None
+        base_url = self._settings.app_domain.rstrip("/")
+        return f"{base_url}/webhooks/provider-bots/{webhook_secret}/telegram"
 
     async def _send_provider_bot_text(self, bot_token: str | None, chat_id: int, text: str) -> None:
         if not bot_token:

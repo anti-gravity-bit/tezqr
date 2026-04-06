@@ -199,6 +199,122 @@ class FakeQrCodeGenerator(QrCodeGenerator):
         return f"png:{data}".encode()
 
 
+class FakeControlPlaneService:
+    def __init__(self) -> None:
+        self.provider_register_calls: list[dict] = []
+        self.provider_bot_calls: list[dict] = []
+        self.provider_destination_calls: list[dict] = []
+        self.workspaces: list[dict] = []
+        self.providers_for_admin: list[dict] = []
+        self.provider_overview: dict | None = None
+        self.provider_members: list[dict] = []
+        self.provider_bots: list[dict] = []
+        self.provider_clients: list[dict] = []
+        self.provider_payments: list[dict] = []
+
+    async def create_provider_from_telegram(
+        self,
+        *,
+        slug: str,
+        name: str,
+        owner_telegram_id: int,
+        owner_display_name: str,
+        owner_telegram_username: str | None = None,
+    ) -> dict:
+        self.provider_register_calls.append(
+            {
+                "slug": slug,
+                "name": name,
+                "owner_telegram_id": owner_telegram_id,
+                "owner_display_name": owner_display_name,
+                "owner_telegram_username": owner_telegram_username,
+            }
+        )
+        return {
+            "slug": slug,
+            "name": name,
+            "api_key": "provider-key-123",
+            "owner_actor_code": "OWNER1",
+        }
+
+    async def create_bot_instance_from_telegram_owner(
+        self,
+        *,
+        provider_slug: str,
+        owner_telegram_id: int,
+        bot_token: str,
+        public_handle: str | None = None,
+    ) -> dict:
+        self.provider_bot_calls.append(
+            {
+                "provider_slug": provider_slug,
+                "owner_telegram_id": owner_telegram_id,
+                "bot_token": bot_token,
+                "public_handle": public_handle,
+            }
+        )
+        return {
+            "code": "BOT-123",
+            "public_handle": public_handle or "https://t.me/orbitpaybot",
+            "webhook_url": "https://tez.goholic.in/webhooks/provider-bots/secret/telegram",
+            "webhook_registration": "configured",
+        }
+
+    async def create_payment_destination_from_telegram_member(
+        self,
+        *,
+        provider_slug: str,
+        telegram_id: int,
+        code: str,
+        vpa: str,
+        payee_name: str,
+        is_default: bool = True,
+    ) -> dict:
+        self.provider_destination_calls.append(
+            {
+                "provider_slug": provider_slug,
+                "telegram_id": telegram_id,
+                "code": code,
+                "vpa": vpa,
+                "payee_name": payee_name,
+                "is_default": is_default,
+            }
+        )
+        return {
+            "code": code,
+            "vpa": vpa,
+            "payee_name": payee_name,
+            "is_default": is_default,
+        }
+
+    async def list_member_workspaces_by_telegram(self, telegram_id: int) -> list[dict]:
+        return self.workspaces
+
+    async def list_all_providers_for_admin(self) -> list[dict]:
+        return self.providers_for_admin
+
+    async def get_provider_overview_for_admin(self, provider_slug: str) -> dict:
+        assert self.provider_overview is not None
+        return self.provider_overview
+
+    async def list_provider_members_for_admin(self, provider_slug: str) -> list[dict]:
+        return self.provider_members
+
+    async def list_provider_bots_for_admin(self, provider_slug: str) -> list[dict]:
+        return self.provider_bots
+
+    async def list_provider_clients_for_admin(self, provider_slug: str) -> list[dict]:
+        return self.provider_clients
+
+    async def list_provider_payments_for_admin(
+        self,
+        provider_slug: str,
+        *,
+        client_code: str | None = None,
+    ) -> list[dict]:
+        return self.provider_payments
+
+
 def make_message(
     *,
     telegram_id: int = 2001,
@@ -565,3 +681,128 @@ async def test_admin_broadcast_sends_offer_to_all_merchants_and_reports_counts(
     assert gateway.text_messages[-1]["chat_id"] == 9999
     assert "Target merchants: 2" in gateway.text_messages[-1]["text"]
     assert "Delivered: 2" in gateway.text_messages[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_provider_register_creates_workspace_and_shows_next_steps(
+    fake_uow: FakeUnitOfWork,
+    fixed_now: datetime,
+) -> None:
+    gateway = FakeTelegramGateway()
+    control_plane = FakeControlPlaneService()
+    service = BotService(
+        uow_factory=lambda: fake_uow,
+        telegram_gateway=gateway,
+        qr_generator=FakeQrCodeGenerator(),
+        settings=make_settings(),
+        control_plane_service=control_plane,
+        now_provider=lambda: fixed_now,
+    )
+
+    await service.handle_message(make_message(text="/provider_register orbit-pay Orbit Pay"))
+
+    assert control_plane.provider_register_calls[0]["slug"] == "orbit-pay"
+    assert "Provider workspace created" in gateway.text_messages[-1]["text"]
+    assert "API key: provider-key-123" in gateway.text_messages[-1]["text"]
+    assert "/provider_bot orbit-pay <bot_token> [public_handle]" in gateway.text_messages[-1][
+        "text"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_bot_and_destination_commands_use_linked_owner_flow(
+    fake_uow: FakeUnitOfWork,
+    fixed_now: datetime,
+) -> None:
+    gateway = FakeTelegramGateway()
+    control_plane = FakeControlPlaneService()
+    service = BotService(
+        uow_factory=lambda: fake_uow,
+        telegram_gateway=gateway,
+        qr_generator=FakeQrCodeGenerator(),
+        settings=make_settings(),
+        control_plane_service=control_plane,
+        now_provider=lambda: fixed_now,
+    )
+
+    await service.handle_message(
+        make_message(text="/provider_bot orbit-pay 123456:ABCDEF https://t.me/orbitpaybot")
+    )
+    await service.handle_message(
+        make_message(text="/provider_destination orbit-pay MAIN orbit@okaxis Orbit Pay")
+    )
+
+    assert control_plane.provider_bot_calls[0]["provider_slug"] == "orbit-pay"
+    assert control_plane.provider_destination_calls[0]["code"] == "MAIN"
+    assert "Webhook: configured" in gateway.text_messages[-2]["text"]
+    assert "Provider destination saved" in gateway.text_messages[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_provider_me_lists_linked_workspaces(
+    fake_uow: FakeUnitOfWork,
+    fixed_now: datetime,
+) -> None:
+    gateway = FakeTelegramGateway()
+    control_plane = FakeControlPlaneService()
+    control_plane.workspaces = [
+        {
+            "provider": {"slug": "orbit-pay", "name": "Orbit Pay"},
+            "api_key": "provider-key-123",
+            "member": {"role": "owner", "actor_code": "OWNER1"},
+            "default_destination": {"code": "MAIN", "vpa": "orbit@okaxis"},
+            "bot_count": 1,
+            "client_count": 4,
+        }
+    ]
+    service = BotService(
+        uow_factory=lambda: fake_uow,
+        telegram_gateway=gateway,
+        qr_generator=FakeQrCodeGenerator(),
+        settings=make_settings(),
+        control_plane_service=control_plane,
+        now_provider=lambda: fixed_now,
+    )
+
+    await service.handle_message(make_message(text="/provider_me"))
+
+    assert "Your provider workspaces" in gateway.text_messages[-1]["text"]
+    assert "Orbit Pay (orbit-pay)" in gateway.text_messages[-1]["text"]
+    assert "Default destination: MAIN -> orbit@okaxis" in gateway.text_messages[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_admin_can_list_providers_from_main_bot(
+    fake_uow: FakeUnitOfWork,
+    fixed_now: datetime,
+) -> None:
+    gateway = FakeTelegramGateway()
+    control_plane = FakeControlPlaneService()
+    control_plane.providers_for_admin = [
+        {
+            "provider": {"slug": "orbit-pay", "name": "Orbit Pay", "api_key": "provider-key-123"},
+            "member_count": 2,
+            "bot_count": 1,
+            "client_count": 4,
+            "pending_payments": 3,
+            "paid_payments": 7,
+            "overdue_payments": 1,
+            "scheduled_reminders": 2,
+        }
+    ]
+    service = BotService(
+        uow_factory=lambda: fake_uow,
+        telegram_gateway=gateway,
+        qr_generator=FakeQrCodeGenerator(),
+        settings=make_settings(),
+        control_plane_service=control_plane,
+        now_provider=lambda: fixed_now,
+    )
+
+    await service.handle_message(
+        make_message(telegram_id=9999, first_name="Admin", text="/providers")
+    )
+
+    assert "Provider workspaces" in gateway.text_messages[-1]["text"]
+    assert "Orbit Pay (orbit-pay)" in gateway.text_messages[-1]["text"]
+    assert "Pending/Paid/Overdue: 3/7/1" in gateway.text_messages[-1]["text"]

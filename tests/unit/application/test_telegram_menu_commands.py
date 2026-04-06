@@ -14,9 +14,12 @@ def test_legacy_admin_commands_extend_public_menu() -> None:
     public = legacy_public_commands()
     admin = legacy_admin_commands()
 
-    assert [command.command for command in public] == ["start", "setupi", "pay"]
+    assert [command.command for command in public[:3]] == ["start", "setupi", "pay"]
+    assert any(command.command == "provider_register" for command in public)
+    assert any(command.command == "provider_me" for command in public)
     assert any(command.command == "stats" for command in admin)
     assert any(command.command == "broadcast" for command in admin)
+    assert any(command.command == "providers" for command in admin)
 
 
 def test_provider_staff_commands_are_role_aware() -> None:

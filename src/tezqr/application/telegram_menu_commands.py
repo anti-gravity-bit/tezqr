@@ -16,6 +16,10 @@ def legacy_public_commands() -> list[TelegramMenuCommand]:
         TelegramMenuCommand("start", "Show welcome and help"),
         TelegramMenuCommand("setupi", "Save your UPI ID"),
         TelegramMenuCommand("pay", "Create a payment QR"),
+        TelegramMenuCommand("provider_register", "Create a provider workspace"),
+        TelegramMenuCommand("provider_bot", "Connect a BotFather bot"),
+        TelegramMenuCommand("provider_destination", "Add a provider UPI destination"),
+        TelegramMenuCommand("provider_me", "Show your provider workspaces"),
     ]
 
 
@@ -26,6 +30,12 @@ def legacy_admin_commands() -> list[TelegramMenuCommand]:
         TelegramMenuCommand("approve", "Approve an upgrade request"),
         TelegramMenuCommand("broadcast", "Send a broadcast message"),
         TelegramMenuCommand("upgrade", "Upgrade a merchant"),
+        TelegramMenuCommand("providers", "List provider workspaces"),
+        TelegramMenuCommand("provider_overview", "Inspect a provider workspace"),
+        TelegramMenuCommand("provider_members", "List provider team members"),
+        TelegramMenuCommand("provider_bots", "List provider bot instances"),
+        TelegramMenuCommand("provider_clients", "List provider clients"),
+        TelegramMenuCommand("provider_payments", "List provider payments"),
     ]
 
 

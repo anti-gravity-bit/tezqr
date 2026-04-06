@@ -97,6 +97,13 @@ class TelegramBotClient(TelegramGateway):
             },
         )
 
+    async def get_me(self) -> dict[str, object]:
+        payload = await self._post_json("getMe", {})
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Telegram API did not return bot metadata.")
+        return result
+
     async def set_my_commands(
         self,
         commands: list[dict[str, str]],
@@ -118,21 +125,22 @@ class TelegramBotClient(TelegramGateway):
             payload["scope"] = scope
         await self._post_json("deleteMyCommands", payload)
 
-    async def _post_json(self, method: str, payload: dict[str, object]) -> None:
+    async def _post_json(self, method: str, payload: dict[str, object]) -> dict[str, object]:
         body = {
             key: value
             for key, value in payload.items()
             if value is not None and value != ""
         }
         response = await self._http_client.post(self._build_url(method), json=body)
-        self._raise_for_telegram_error(response)
+        return self._raise_for_telegram_error(response)
 
     def _build_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self._bot_token}/{method}"
 
     @staticmethod
-    def _raise_for_telegram_error(response: httpx.Response) -> None:
+    def _raise_for_telegram_error(response: httpx.Response) -> dict[str, object]:
         response.raise_for_status()
         payload = response.json()
         if not payload.get("ok"):
             raise RuntimeError(f"Telegram API error: {payload}")
+        return payload

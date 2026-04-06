@@ -88,17 +88,18 @@ def build_container(settings: Settings) -> AppContainer:
     def uow_factory() -> AbstractUnitOfWork:
         return SQLAlchemyUnitOfWork(session_factory)
 
-    bot_service = BotService(
-        uow_factory=uow_factory,
-        telegram_gateway=telegram_client,
-        qr_generator=qr_generator,
-        settings=settings,
-    )
     control_plane_service = ControlPlaneService(
         session_factory=session_factory,
         qr_generator=qr_generator,
         http_client=http_client,
         settings=settings,
+    )
+    bot_service = BotService(
+        uow_factory=uow_factory,
+        telegram_gateway=telegram_client,
+        qr_generator=qr_generator,
+        settings=settings,
+        control_plane_service=control_plane_service,
     )
     return AppContainer(
         settings=settings,
