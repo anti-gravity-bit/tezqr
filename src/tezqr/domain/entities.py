@@ -134,6 +134,9 @@ class ProviderMember:
     actor_code: str
     display_name: str
     role: ProviderMemberRole
+    telegram_id: int | None = None
+    telegram_username: str | None = None
+    whatsapp_number: PhoneNumber | None = None
     is_active: bool = True
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -141,6 +144,8 @@ class ProviderMember:
     def __post_init__(self) -> None:
         self.actor_code = _clean_text(self.actor_code, field_name="Actor code").upper()
         self.display_name = _clean_text(self.display_name, field_name="Display name")
+        if self.telegram_id is not None and self.telegram_id <= 0:
+            raise DomainValidationError("Telegram id must be positive when provided.")
 
 
 @dataclass(slots=True)

@@ -71,7 +71,11 @@ class ProviderMemberModel(Base):
     """Provider team member used for role-based access control."""
 
     __tablename__ = "provider_members"
-    __table_args__ = (UniqueConstraint("provider_id", "actor_code"),)
+    __table_args__ = (
+        UniqueConstraint("provider_id", "actor_code"),
+        UniqueConstraint("provider_id", "telegram_id"),
+        UniqueConstraint("provider_id", "whatsapp_number"),
+    )
 
     id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     provider_id: Mapped[UUID] = mapped_column(
@@ -83,6 +87,9 @@ class ProviderMemberModel(Base):
     actor_code: Mapped[str] = mapped_column(String(64), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    whatsapp_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

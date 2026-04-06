@@ -51,6 +51,9 @@ class ProviderControlPresenter:
             "actor_code": model.actor_code,
             "display_name": model.display_name,
             "role": model.role,
+            "telegram_id": model.telegram_id,
+            "telegram_username": model.telegram_username,
+            "whatsapp_number": model.whatsapp_number,
             "is_active": model.is_active,
         }
 

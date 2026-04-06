@@ -394,3 +394,293 @@ async def test_provider_telegram_bot_webhook_onboards_client_and_serves_item_cod
     urls = [call["url"] for call in recording_transport.calls]
     assert any("bravo-telegram-token/sendMessage" in url for url in urls)
     assert any("bravo-telegram-token/sendPhoto" in url for url in urls)
+
+
+@pytest.mark.asyncio
+async def test_provider_telegram_bot_rbac_commands_support_staff_workflows(
+    db_session_factory,
+) -> None:
+    settings = Settings(
+        app_env="test",
+        database_url="postgresql+asyncpg://tezqr:tezqr@localhost:5432/tezqr",
+        telegram_bot_token="test-token",
+        admin_telegram_id=9999,
+        admin_upi_id="owner@upi",
+        telegram_webhook_secret="secret",
+        auto_register_webhook=False,
+    )
+    recording_transport = RecordingTransport()
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(recording_transport), timeout=20.0
+    )
+    service = ControlPlaneService(
+        session_factory=db_session_factory,
+        qr_generator=QRCodeGeneratorService(),
+        http_client=http_client,
+        settings=settings,
+    )
+    app = create_app(settings=settings, container=AppTestContainer(settings, service))
+
+    async with LifespanManager(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            provider_response = await client.post(
+                "/api/providers",
+                json={
+                    "slug": "orbit-pay",
+                    "name": "Orbit Pay",
+                    "owner_actor_code": "OWNER1",
+                    "owner_display_name": "Owner One",
+                },
+            )
+            api_key = provider_response.json()["api_key"]
+            headers = {"x-api-key": api_key, "x-actor-code": "OWNER1"}
+
+            await client.post(
+                "/api/providers/orbit-pay/destinations",
+                headers=headers,
+                json={
+                    "code": "MAIN",
+                    "label": "Primary UPI",
+                    "vpa": "orbit@okaxis",
+                    "payee_name": "Orbit Pay",
+                    "is_default": True,
+                },
+            )
+            bot_response = await client.post(
+                "/api/providers/orbit-pay/bots",
+                headers=headers,
+                json={
+                    "platform": "telegram",
+                    "display_name": "Orbit Bot",
+                    "bot_token": "orbit-telegram-token",
+                    "public_handle": "t.me/orbitpaybot",
+                },
+            )
+            webhook_secret = bot_response.json()["webhook_secret"]
+
+            client_response = await client.post(
+                "/api/providers/orbit-pay/clients",
+                headers=headers,
+                json={
+                    "full_name": "Neha Patel",
+                    "telegram_id": 8801,
+                    "telegram_username": "neha",
+                },
+            )
+            client_code = client_response.json()["code"]
+
+            unlinked_dashboard = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 201,
+                    "message": {
+                        "message_id": 1,
+                        "from": {"id": 9101, "first_name": "Arjun", "username": "arjun"},
+                        "chat": {"id": 9101},
+                        "text": "/dashboard",
+                    },
+                },
+            )
+            owner_login = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 202,
+                    "message": {
+                        "message_id": 2,
+                        "from": {"id": 9101, "first_name": "Arjun", "username": "arjun"},
+                        "chat": {"id": 9101},
+                        "text": f"/login OWNER1 {api_key}",
+                    },
+                },
+            )
+            onboard_link = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 203,
+                    "message": {
+                        "message_id": 3,
+                        "from": {"id": 9101, "first_name": "Arjun", "username": "arjun"},
+                        "chat": {"id": 9101},
+                        "text": "/onboardlink",
+                    },
+                },
+            )
+            member_add = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 204,
+                    "message": {
+                        "message_id": 4,
+                        "from": {"id": 9101, "first_name": "Arjun", "username": "arjun"},
+                        "chat": {"id": 9101},
+                        "text": "/memberadd OPS1 operator Ops Lead",
+                    },
+                },
+            )
+            operator_login = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 205,
+                    "message": {
+                        "message_id": 5,
+                        "from": {"id": 9202, "first_name": "Mira", "username": "mira"},
+                        "chat": {"id": 9202},
+                        "text": f"/login OPS1 {api_key}",
+                    },
+                },
+            )
+            charge_payment = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 206,
+                    "message": {
+                        "message_id": 6,
+                        "from": {"id": 9202, "first_name": "Mira", "username": "mira"},
+                        "chat": {"id": 9202},
+                        "text": f"/charge {client_code} 499 Quarterly retainer",
+                    },
+                },
+            )
+
+            client_payments = await client.get(
+                f"/api/providers/orbit-pay/clients/{client_code}/payments",
+                headers=headers,
+            )
+            payment_reference = client_payments.json()["payments"][0]["reference"]
+
+            send_reminder = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/telegram",
+                json={
+                    "update_id": 207,
+                    "message": {
+                        "message_id": 7,
+                        "from": {"id": 9202, "first_name": "Mira", "username": "mira"},
+                        "chat": {"id": 9202},
+                        "text": f"/remind {payment_reference} Please complete the payment today.",
+                    },
+                },
+            )
+
+            assert unlinked_dashboard.status_code == 200
+            assert owner_login.status_code == 200
+            assert onboard_link.status_code == 200
+            assert member_add.status_code == 200
+            assert operator_login.status_code == 200
+            assert charge_payment.status_code == 200
+            assert send_reminder.status_code == 200
+
+    send_message_bodies = [
+        call["body"]
+        for call in recording_transport.calls
+        if "orbit-telegram-token/sendMessage" in call["url"]
+    ]
+    assert any("Use /login <actor_code> <api_key>" in body for body in send_message_bodies)
+    assert any("Role: owner" in body for body in send_message_bodies)
+    assert any("https://t.me/orbitpaybot" in body for body in send_message_bodies)
+    assert any("Actor: OPS1" in body for body in send_message_bodies)
+    assert any("Created payment" in body for body in send_message_bodies)
+    assert any("Delivery: sent" in body for body in send_message_bodies)
+    assert any(
+        "orbit-telegram-token/sendPhoto" in call["url"] for call in recording_transport.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_whatsapp_bot_rbac_commands_return_role_aware_replies(
+    db_session_factory,
+) -> None:
+    settings = Settings(
+        app_env="test",
+        database_url="postgresql+asyncpg://tezqr:tezqr@localhost:5432/tezqr",
+        telegram_bot_token="test-token",
+        admin_telegram_id=9999,
+        admin_upi_id="owner@upi",
+        telegram_webhook_secret="secret",
+        auto_register_webhook=False,
+    )
+    recording_transport = RecordingTransport()
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(recording_transport), timeout=20.0
+    )
+    service = ControlPlaneService(
+        session_factory=db_session_factory,
+        qr_generator=QRCodeGeneratorService(),
+        http_client=http_client,
+        settings=settings,
+    )
+    app = create_app(settings=settings, container=AppTestContainer(settings, service))
+
+    async with LifespanManager(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            provider_response = await client.post(
+                "/api/providers",
+                json={
+                    "slug": "nova-pay",
+                    "name": "Nova Pay",
+                    "owner_actor_code": "OWNER1",
+                    "owner_display_name": "Owner One",
+                },
+            )
+            api_key = provider_response.json()["api_key"]
+            headers = {"x-api-key": api_key, "x-actor-code": "OWNER1"}
+
+            await client.post(
+                "/api/providers/nova-pay/destinations",
+                headers=headers,
+                json={
+                    "code": "MAIN",
+                    "label": "Primary UPI",
+                    "vpa": "nova@okaxis",
+                    "payee_name": "Nova Pay",
+                    "is_default": True,
+                },
+            )
+            bot_response = await client.post(
+                "/api/providers/nova-pay/bots",
+                headers=headers,
+                json={
+                    "platform": "whatsapp",
+                    "display_name": "Nova WA",
+                    "public_handle": "+919999000000",
+                },
+            )
+            webhook_secret = bot_response.json()["webhook_secret"]
+
+            login_response = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/whatsapp",
+                json={
+                    "from_number": "+919999111111",
+                    "name": "Owner One",
+                    "text": f"/login OWNER1 {api_key}",
+                },
+            )
+            onboard_response = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/whatsapp",
+                json={
+                    "from_number": "+919999111111",
+                    "name": "Owner One",
+                    "text": "/onboardlink",
+                },
+            )
+            dashboard_response = await client.post(
+                f"/webhooks/provider-bots/{webhook_secret}/whatsapp",
+                json={
+                    "from_number": "+919999111111",
+                    "name": "Owner One",
+                    "text": "/dashboard",
+                },
+            )
+
+            assert login_response.status_code == 200
+            assert onboard_response.status_code == 200
+            assert dashboard_response.status_code == 200
+
+            assert "Role: owner" in login_response.json()["replies"][0]
+            assert "https://wa.me/919999000000" in onboard_response.json()["replies"][0]
+            assert "Clients:" in dashboard_response.json()["replies"][0]

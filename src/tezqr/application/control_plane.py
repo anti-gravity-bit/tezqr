@@ -28,6 +28,31 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tezqr.application.control_plane_messages import ProviderMessageComposer
 from tezqr.application.control_plane_presenter import ProviderControlPresenter
 from tezqr.application.ports import QrCodeGenerator
+from tezqr.application.provider_bot_commands import (
+    ProviderBotChargeCommand,
+    ProviderBotClientPaymentsCommand,
+    ProviderBotClientsCommand,
+    ProviderBotDashboardCommand,
+    ProviderBotHelpCommand,
+    ProviderBotHistoryCommand,
+    ProviderBotItemCodeCommand,
+    ProviderBotLoginCommand,
+    ProviderBotLogoutCommand,
+    ProviderBotMalformedCommand,
+    ProviderBotMemberAddCommand,
+    ProviderBotNoteCommand,
+    ProviderBotOnboardLinkCommand,
+    ProviderBotPayCommand,
+    ProviderBotPlainText,
+    ProviderBotReminderCommand,
+    ProviderBotRunRemindersCommand,
+    ProviderBotShareCommand,
+    ProviderBotStartCommand,
+    ProviderBotStatusCommand,
+    ProviderBotUnsupportedCommand,
+    ProviderBotWhoamiCommand,
+    parse_provider_bot_input,
+)
 from tezqr.domain.entities import (
     Client,
     OutboundMessage,
@@ -97,6 +122,16 @@ class OutboundDispatchResult:
     recipient: str
     share_url: str | None
     bot_instance: ProviderBotInstanceModel | None
+
+
+@dataclass(slots=True)
+class ProviderBotCommandResult:
+    texts: list[str]
+    photo_bytes: bytes | None = None
+    photo_filename: str | None = None
+    photo_caption: str | None = None
+    share_url: str | None = None
+    payment_reference: str | None = None
 
 
 class ControlPlaneService:
@@ -214,6 +249,9 @@ class ControlPlaneService:
                 actor_code=new_actor_code,
                 display_name=display_name,
                 role=role_enum,
+                telegram_id=None,
+                telegram_username=None,
+                whatsapp_number=None,
                 created_at=now,
                 updated_at=now,
             )
@@ -223,6 +261,9 @@ class ControlPlaneService:
                 actor_code=member.actor_code,
                 display_name=member.display_name,
                 role=member.role.value,
+                telegram_id=member.telegram_id,
+                telegram_username=member.telegram_username,
+                whatsapp_number=member.whatsapp_number.value if member.whatsapp_number else None,
                 is_active=member.is_active,
                 created_at=member.created_at,
                 updated_at=member.updated_at,
@@ -1044,10 +1085,11 @@ class ControlPlaneService:
                 updated_at=reminder.updated_at,
             )
             session.add(model)
+            dispatch: OutboundDispatchResult | None = None
             if reminder.reminder_type == ReminderType.MANUAL or (
                 reminder.scheduled_for is None or reminder.scheduled_for <= now
             ):
-                await self._send_single_reminder(
+                dispatch = await self._send_single_reminder(
                     session=session,
                     provider=access.provider,
                     reminder=model,
@@ -1057,7 +1099,12 @@ class ControlPlaneService:
                     now=now,
                 )
             await session.commit()
-            return self._serialize_reminder(model)
+            payload = self._serialize_reminder(model)
+            if dispatch is not None:
+                payload["delivery_state"] = dispatch.delivery_state.value
+                payload["share_url"] = dispatch.share_url
+                payload["recipient"] = dispatch.recipient
+            return payload
 
     async def run_due_reminders(
         self,
@@ -1378,124 +1425,36 @@ class ControlPlaneService:
             provider = await self._repository(session).get_provider_by_id(bot_instance.provider_id)
             if provider is None:
                 raise DomainValidationError("Provider bot is not linked to a provider.")
-            client = await self._upsert_client_from_telegram(
-                session,
-                provider=provider,
-                bot_instance=bot_instance,
-                telegram_id=message.from_user.telegram_id,
-                first_name=message.from_user.display_name or message.from_user.first_name,
-                username=message.from_user.username,
+            repository = self._repository(session)
+            member = await repository.get_active_member_by_telegram_id(
+                provider.id, message.from_user.telegram_id
             )
-            text = (message.text or "").strip()
-            if text.startswith("/item-code"):
-                parts = text.split(maxsplit=2)
-                if len(parts) < 2:
-                    await self._send_provider_bot_text(
-                        bot_instance.bot_token,
-                        message.chat_id,
-                        f"{provider.name} bot\nUse /item-code <code> [amount]",
-                    )
-                else:
-                    item_code = parts[1]
-                    amount = parts[2] if len(parts) > 2 else None
-                    payload = await self.get_qr_by_item_code(
-                        provider_slug=provider.slug,
-                        api_key=provider.api_key,
-                        actor_code=None,
-                        item_code=item_code,
-                        amount=amount,
-                        client_code=client.code,
-                    )
-                    payment_info = payload.get("payment")
-                    asset_info = None
-                    if payment_info:
-                        asset_info = next(
-                            (
-                                asset
-                                for asset in payment_info["assets"]
-                                if asset["asset_type"] == QrAssetType.PAYMENT_CARD.value
-                            ),
-                            payment_info["assets"][0],
-                        )
-                        filename, mime_type, content = await self.download_asset(
-                            provider_slug=provider.slug,
-                            api_key=provider.api_key,
-                            actor_code=None,
-                            asset_code=asset_info["code"],
-                        )
-                        await self._send_provider_bot_photo(
-                            bot_instance.bot_token,
-                            message.chat_id,
-                            content,
-                            filename=filename,
-                            caption=self._bot_payment_caption(
-                                provider.name, payment_info["payment"]
-                            ),
-                        )
-                    elif payload.get("asset"):
-                        asset_info = payload["asset"]
-                        filename, _, content = await self.download_asset(
-                            provider_slug=provider.slug,
-                            api_key=provider.api_key,
-                            actor_code=None,
-                            asset_code=asset_info["code"],
-                        )
-                        await self._send_provider_bot_photo(
-                            bot_instance.bot_token,
-                            message.chat_id,
-                            content,
-                            filename=filename,
-                            caption=(
-                                f"{provider.name} payment QR\n"
-                                f"Item: {payload['template']['item_code']}"
-                            ),
-                        )
-            elif text.startswith("/pay"):
-                parts = text.split(maxsplit=2)
-                if len(parts) < 3:
-                    await self._send_provider_bot_text(
-                        bot_instance.bot_token,
-                        message.chat_id,
-                        f"{provider.name} bot\nUse /pay <amount> <description>",
-                    )
-                else:
-                    payment_payload = await self.create_payment_request(
-                        provider_slug=provider.slug,
-                        api_key=provider.api_key,
-                        actor_code=None,
-                        amount=parts[1],
-                        description=parts[2],
-                        client_code=client.code,
-                        walk_in=False,
-                    )
-                    asset = next(
-                        asset
-                        for asset in payment_payload["assets"]
-                        if asset["asset_type"] == QrAssetType.PAYMENT_CARD.value
-                    )
-                    filename, _, content = await self.download_asset(
-                        provider_slug=provider.slug,
-                        api_key=provider.api_key,
-                        actor_code=None,
-                        asset_code=asset["code"],
-                    )
-                    await self._send_provider_bot_photo(
-                        bot_instance.bot_token,
-                        message.chat_id,
-                        content,
-                        filename=filename,
-                        caption=self._bot_payment_caption(
-                            provider.name,
-                            payment_payload["payment"],
-                        ),
-                    )
-            else:
-                await self._send_provider_bot_text(
+            parsed = parse_provider_bot_input(message.text)
+            try:
+                result = await self._execute_provider_bot_command(
+                    session=session,
+                    provider=provider,
+                    bot_instance=bot_instance,
+                    platform=BotPlatform.TELEGRAM,
+                    parsed=parsed,
+                    member=member,
+                    telegram_user=message.from_user,
+                )
+                await session.commit()
+            except (AuthorizationError, DomainValidationError) as exc:
+                await session.rollback()
+                result = ProviderBotCommandResult(texts=[str(exc)])
+
+            if result.photo_bytes and result.photo_filename and result.photo_caption:
+                await self._send_provider_bot_photo(
                     bot_instance.bot_token,
                     message.chat_id,
-                    self._bot_welcome_message(provider.name, provider.branding_json),
+                    result.photo_bytes,
+                    filename=result.photo_filename,
+                    caption=result.photo_caption,
                 )
-            await session.commit()
+            for text in result.texts:
+                await self._send_provider_bot_text(bot_instance.bot_token, message.chat_id, text)
 
     async def handle_provider_whatsapp_message(
         self,
@@ -1512,40 +1471,715 @@ class ControlPlaneService:
             provider = await self._repository(session).get_provider_by_id(bot_instance.provider_id)
             if provider is None:
                 raise DomainValidationError("Provider bot is not linked to a provider.")
-            client = await self._upsert_client_from_whatsapp(
+            repository = self._repository(session)
+            member = await repository.get_active_member_by_whatsapp_number(
+                provider.id, PhoneNumber(from_number).value
+            )
+            parsed = parse_provider_bot_input(text)
+            try:
+                result = await self._execute_provider_bot_command(
+                    session=session,
+                    provider=provider,
+                    bot_instance=bot_instance,
+                    platform=BotPlatform.WHATSAPP,
+                    parsed=parsed,
+                    member=member,
+                    whatsapp_name=name,
+                    whatsapp_number=from_number,
+                )
+                await session.commit()
+            except (AuthorizationError, DomainValidationError) as exc:
+                await session.rollback()
+                result = ProviderBotCommandResult(texts=[str(exc)])
+            return {
+                "replies": result.texts,
+                "share_url": result.share_url,
+                "payment_reference": result.payment_reference,
+            }
+
+    async def _execute_provider_bot_command(
+        self,
+        *,
+        session: AsyncSession,
+        provider: ProviderModel,
+        bot_instance: ProviderBotInstanceModel,
+        platform: BotPlatform,
+        parsed,
+        member: ProviderMemberModel | None,
+        telegram_user=None,
+        whatsapp_name: str | None = None,
+        whatsapp_number: str | None = None,
+    ) -> ProviderBotCommandResult:
+        if isinstance(parsed, ProviderBotLoginCommand):
+            linked_member = await self._link_provider_member(
+                session=session,
+                provider=provider,
+                platform=platform,
+                actor_code=parsed.actor_code,
+                api_key=parsed.api_key,
+                telegram_user=telegram_user,
+                whatsapp_number=whatsapp_number,
+            )
+            role = ProviderMemberRole(linked_member.role)
+            return ProviderBotCommandResult(
+                texts=[
+                    self._messages.build_member_identity_message(
+                        provider.name,
+                        linked_member.actor_code,
+                        linked_member.display_name,
+                        role,
+                    ),
+                    self._messages.build_staff_help(provider.name, role),
+                ]
+            )
+
+        if isinstance(parsed, ProviderBotLogoutCommand):
+            if member is None:
+                return ProviderBotCommandResult(
+                    texts=["No linked provider staff session was found for this chat."]
+                )
+            await self._unlink_provider_member(
+                session=session,
+                member=member,
+                platform=platform,
+            )
+            return ProviderBotCommandResult(
+                texts=[f"{provider.name} staff session has been disconnected from this chat."]
+            )
+
+        if isinstance(parsed, ProviderBotWhoamiCommand):
+            if member is None:
+                return ProviderBotCommandResult(texts=[self._staff_login_prompt()])
+            role = ProviderMemberRole(member.role)
+            return ProviderBotCommandResult(
+                texts=[
+                    self._messages.build_member_identity_message(
+                        provider.name,
+                        member.actor_code,
+                        member.display_name,
+                        role,
+                    )
+                ]
+            )
+
+        if isinstance(parsed, ProviderBotOnboardLinkCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.VIEWER)
+            return ProviderBotCommandResult(
+                texts=[
+                    self._messages.build_onboarding_link_message(
+                        provider.name,
+                        platform,
+                        self._format_bot_public_handle(platform, bot_instance.public_handle),
+                    )
+                ]
+            )
+
+        if isinstance(parsed, ProviderBotDashboardCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.VIEWER)
+            payload = await self.get_dashboard(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+            )
+            return ProviderBotCommandResult(texts=[self._dashboard_message(provider.name, payload)])
+
+        if isinstance(parsed, ProviderBotClientsCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.VIEWER)
+            rows = await self.list_clients(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+            )
+            return ProviderBotCommandResult(texts=[self._clients_message(provider.name, rows)])
+
+        if isinstance(parsed, ProviderBotClientPaymentsCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.VIEWER)
+            payload = await self.list_client_payments(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                client_code=parsed.client_code,
+            )
+            return ProviderBotCommandResult(
+                texts=[self._client_payments_message(provider.name, payload)]
+            )
+
+        if isinstance(parsed, ProviderBotHistoryCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.VIEWER)
+            payload = await self.get_payment_history(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                payment_reference=parsed.payment_reference,
+            )
+            return ProviderBotCommandResult(
+                texts=[self._payment_history_message(provider.name, payload)]
+            )
+
+        if isinstance(parsed, ProviderBotChargeCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            payload = await self.create_payment_request(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                amount=parsed.amount,
+                description=parsed.description,
+                client_code=parsed.client_code,
+                channel=platform.value,
+                walk_in=False,
+            )
+            return await self._payment_command_result(
+                provider=provider,
+                platform=platform,
+                payment_payload=payload,
+                share_to_phone=PhoneNumber(whatsapp_number).value if whatsapp_number else None,
+                follow_up_text=(
+                    f"Created payment {payload['payment']['reference']}.\n"
+                    "Use /share <payment_reference> [telegram|whatsapp] or /remind to deliver it."
+                ),
+            )
+
+        if isinstance(parsed, ProviderBotShareCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            payload = await self.share_payment_request(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                payment_reference=parsed.payment_reference,
+                channel=(parsed.channel or platform.value),
+            )
+            return ProviderBotCommandResult(
+                texts=[self._share_result_message(provider.name, payload)],
+                share_url=payload.get("share_url"),
+                payment_reference=payload["payment_reference"],
+            )
+
+        if isinstance(parsed, ProviderBotStatusCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            payload = await self.mark_payment_status(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                payment_reference=parsed.payment_reference,
+                status=parsed.status,
+                notes_summary=parsed.notes_summary,
+            )
+            return ProviderBotCommandResult(
+                texts=[self._payment_status_message(provider.name, payload)]
+            )
+
+        if isinstance(parsed, ProviderBotNoteCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            payload = await self.add_payment_note(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                payment_reference=parsed.payment_reference,
+                note=parsed.note,
+            )
+            return ProviderBotCommandResult(
+                texts=[self._payment_note_message(provider.name, payload)]
+            )
+
+        if isinstance(parsed, ProviderBotReminderCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            reminder_type = (
+                ReminderType.SCHEDULED.value
+                if parsed.scheduled_for is not None
+                else ReminderType.MANUAL.value
+            )
+            payload = await self.create_reminder(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                reminder_type=reminder_type,
+                channel=platform.value,
+                message=parsed.message,
+                payment_reference=parsed.payment_reference,
+                scheduled_for=parsed.scheduled_for,
+                include_qr=True,
+            )
+            return ProviderBotCommandResult(
+                texts=[self._reminder_message(provider.name, payload)],
+                share_url=payload.get("share_url"),
+                payment_reference=parsed.payment_reference,
+            )
+
+        if isinstance(parsed, ProviderBotRunRemindersCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.OPERATOR)
+            payload = await self.run_due_reminders(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+            )
+            return ProviderBotCommandResult(
+                texts=[
+                    (
+                        f"{provider.name} reminders\n\n"
+                        f"Processed: {payload['processed']}\n"
+                        f"Sent: {payload['sent']}\n"
+                        f"Failed: {payload['failed']}"
+                    )
+                ]
+            )
+
+        if isinstance(parsed, ProviderBotMemberAddCommand):
+            self._ensure_provider_bot_member_role(member, ProviderMemberRole.MANAGER)
+            payload = await self.create_member(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=member.actor_code,
+                requesting_role=ProviderMemberRole.MANAGER,
+                new_actor_code=parsed.actor_code,
+                display_name=parsed.display_name,
+                role=parsed.role,
+            )
+            return ProviderBotCommandResult(
+                texts=[
+                    (
+                        f"{provider.name} team member created\n\n"
+                        f"Actor: {payload['actor_code']}\n"
+                        f"Role: {payload['role']}\n"
+                        "Share the provider API key privately so they can run:\n"
+                        f"/login {payload['actor_code']} <provider_api_key>"
+                    )
+                ]
+            )
+
+        if isinstance(parsed, ProviderBotItemCodeCommand):
+            client = await self._ensure_provider_bot_client(
+                session=session,
+                provider=provider,
+                bot_instance=bot_instance,
+                platform=platform,
+                telegram_user=telegram_user,
+                whatsapp_name=whatsapp_name,
+                whatsapp_number=whatsapp_number,
+            )
+            await session.commit()
+            payload = await self.get_qr_by_item_code(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=None,
+                item_code=parsed.item_code,
+                amount=parsed.amount,
+                client_code=client.code,
+            )
+            return await self._item_code_command_result(
+                provider=provider,
+                platform=platform,
+                payload=payload,
+                item_code=parsed.item_code,
+                client_code=client.code,
+                actor_code=None,
+                share_to_phone=PhoneNumber(whatsapp_number).value if whatsapp_number else None,
+            )
+
+        if isinstance(parsed, ProviderBotPayCommand):
+            client = await self._ensure_provider_bot_client(
+                session=session,
+                provider=provider,
+                bot_instance=bot_instance,
+                platform=platform,
+                telegram_user=telegram_user,
+                whatsapp_name=whatsapp_name,
+                whatsapp_number=whatsapp_number,
+            )
+            await session.commit()
+            payload = await self.create_payment_request(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=None,
+                amount=parsed.amount,
+                description=parsed.description,
+                client_code=client.code,
+                channel=platform.value,
+                walk_in=False,
+            )
+            return await self._payment_command_result(
+                provider=provider,
+                platform=platform,
+                payment_payload=payload,
+                share_to_phone=PhoneNumber(whatsapp_number).value if whatsapp_number else None,
+            )
+
+        if isinstance(parsed, (ProviderBotStartCommand, ProviderBotHelpCommand)):
+            if member is None:
+                await self._ensure_provider_bot_client(
+                    session=session,
+                    provider=provider,
+                    bot_instance=bot_instance,
+                    platform=platform,
+                    telegram_user=telegram_user,
+                    whatsapp_name=whatsapp_name,
+                    whatsapp_number=whatsapp_number,
+                )
+            return ProviderBotCommandResult(
+                texts=[self._provider_bot_help_message(provider, member)]
+            )
+
+        if isinstance(parsed, ProviderBotMalformedCommand):
+            return ProviderBotCommandResult(
+                texts=[f"Use: {parsed.usage}", self._provider_bot_help_message(provider, member)]
+            )
+
+        if isinstance(parsed, (ProviderBotUnsupportedCommand, ProviderBotPlainText)):
+            if member is None:
+                await self._ensure_provider_bot_client(
+                    session=session,
+                    provider=provider,
+                    bot_instance=bot_instance,
+                    platform=platform,
+                    telegram_user=telegram_user,
+                    whatsapp_name=whatsapp_name,
+                    whatsapp_number=whatsapp_number,
+                )
+            return ProviderBotCommandResult(
+                texts=[self._provider_bot_help_message(provider, member)]
+            )
+
+        return ProviderBotCommandResult(
+            texts=[self._provider_bot_help_message(provider, member)]
+        )
+
+    async def _link_provider_member(
+        self,
+        *,
+        session: AsyncSession,
+        provider: ProviderModel,
+        platform: BotPlatform,
+        actor_code: str,
+        api_key: str,
+        telegram_user=None,
+        whatsapp_number: str | None = None,
+    ) -> ProviderMemberModel:
+        if provider.api_key != api_key:
+            raise AuthorizationError("Invalid provider API key.")
+        repository = self._repository(session)
+        member = await repository.get_active_member(provider.id, actor_code)
+        if member is None:
+            raise AuthorizationError("Unknown or inactive provider actor.")
+        now = self._now_provider()
+        if platform == BotPlatform.TELEGRAM:
+            if telegram_user is None:
+                raise DomainValidationError("Telegram identity is required for login.")
+            existing = await repository.get_active_member_by_telegram_id(
+                provider.id, telegram_user.telegram_id
+            )
+            if existing is not None and existing.id != member.id:
+                raise AuthorizationError(
+                    f"This Telegram account is already linked to actor {existing.actor_code}."
+                )
+            member.telegram_id = telegram_user.telegram_id
+            member.telegram_username = telegram_user.username
+        else:
+            if whatsapp_number is None:
+                raise DomainValidationError("WhatsApp identity is required for login.")
+            normalized_number = PhoneNumber(whatsapp_number).value
+            existing = await repository.get_active_member_by_whatsapp_number(
+                provider.id, normalized_number
+            )
+            if existing is not None and existing.id != member.id:
+                raise AuthorizationError(
+                    f"This WhatsApp number is already linked to actor {existing.actor_code}."
+                )
+            member.whatsapp_number = normalized_number
+        member.updated_at = now
+        return member
+
+    async def _unlink_provider_member(
+        self,
+        *,
+        session: AsyncSession,
+        member: ProviderMemberModel,
+        platform: BotPlatform,
+    ) -> None:
+        member.updated_at = self._now_provider()
+        if platform == BotPlatform.TELEGRAM:
+            member.telegram_id = None
+            member.telegram_username = None
+        else:
+            member.whatsapp_number = None
+
+    async def _ensure_provider_bot_client(
+        self,
+        *,
+        session: AsyncSession,
+        provider: ProviderModel,
+        bot_instance: ProviderBotInstanceModel,
+        platform: BotPlatform,
+        telegram_user=None,
+        whatsapp_name: str | None = None,
+        whatsapp_number: str | None = None,
+    ) -> ClientModel:
+        if platform == BotPlatform.TELEGRAM:
+            if telegram_user is None:
+                raise DomainValidationError("Telegram client context is missing.")
+            return await self._upsert_client_from_telegram(
                 session,
                 provider=provider,
                 bot_instance=bot_instance,
-                full_name=name,
-                whatsapp_number=from_number,
+                telegram_id=telegram_user.telegram_id,
+                first_name=telegram_user.display_name or telegram_user.first_name,
+                username=telegram_user.username,
             )
-            normalized_text = text.strip()
-            if normalized_text.startswith("/item-code"):
-                parts = normalized_text.split(maxsplit=2)
-                if len(parts) < 2:
-                    return {"replies": [f"{provider.name} bot\nUse /item-code <code> [amount]"]}
-                payload = await self.get_qr_by_item_code(
-                    provider_slug=provider.slug,
-                    api_key=provider.api_key,
-                    actor_code=None,
-                    item_code=parts[1],
-                    amount=parts[2] if len(parts) > 2 else None,
-                    client_code=client.code,
-                )
-                if payload.get("payment"):
-                    payment = payload["payment"]["payment"]
-                    share_link = self._build_whatsapp_share_link(
-                        PhoneNumber(from_number),
-                        self._bot_payment_caption(provider.name, payment),
-                    )
-                    await session.commit()
-                    return {
-                        "replies": [self._bot_payment_caption(provider.name, payment)],
-                        "share_url": share_link,
-                        "payment_reference": payment["reference"],
-                    }
-            await session.commit()
-            return {"replies": [self._bot_welcome_message(provider.name, provider.branding_json)]}
+        if whatsapp_name is None or whatsapp_number is None:
+            raise DomainValidationError("WhatsApp client context is missing.")
+        return await self._upsert_client_from_whatsapp(
+            session,
+            provider=provider,
+            bot_instance=bot_instance,
+            full_name=whatsapp_name,
+            whatsapp_number=whatsapp_number,
+        )
+
+    def _ensure_provider_bot_member_role(
+        self,
+        member: ProviderMemberModel | None,
+        required_role: ProviderMemberRole,
+    ) -> None:
+        if member is None:
+            raise AuthorizationError(self._staff_login_prompt())
+        member_role = ProviderMemberRole(member.role)
+        if ROLE_RANK[member_role] < ROLE_RANK[required_role]:
+            raise AuthorizationError(f"This command requires {required_role.value} access.")
+
+    async def _item_code_command_result(
+        self,
+        *,
+        provider: ProviderModel,
+        platform: BotPlatform,
+        payload: dict[str, Any],
+        item_code: str,
+        client_code: str,
+        actor_code: str | None,
+        share_to_phone: str | None,
+    ) -> ProviderBotCommandResult:
+        payment_info = payload.get("payment")
+        if payment_info:
+            return await self._payment_command_result(
+                provider=provider,
+                platform=platform,
+                payment_payload=payment_info,
+                share_to_phone=share_to_phone,
+            )
+        asset_info = payload.get("asset")
+        if asset_info is None:
+            return ProviderBotCommandResult(texts=[self._provider_bot_help_message(provider, None)])
+        if platform == BotPlatform.TELEGRAM:
+            filename, _, content = await self.download_asset(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=actor_code,
+                asset_code=asset_info["code"],
+            )
+            template = payload["template"]
+            return ProviderBotCommandResult(
+                texts=[],
+                photo_bytes=content,
+                photo_filename=filename,
+                photo_caption=f"{provider.name} payment QR\nItem: {template['item_code']}",
+            )
+        live_payment = await self.create_payment_request(
+            provider_slug=provider.slug,
+            api_key=provider.api_key,
+            actor_code=actor_code,
+            amount=None,
+            description=None,
+            client_code=client_code,
+            item_code=item_code,
+            channel=platform.value,
+            walk_in=False,
+        )
+        return await self._payment_command_result(
+            provider=provider,
+            platform=platform,
+            payment_payload=live_payment,
+            share_to_phone=share_to_phone,
+        )
+
+    async def _payment_command_result(
+        self,
+        *,
+        provider: ProviderModel,
+        platform: BotPlatform,
+        payment_payload: dict[str, Any],
+        share_to_phone: str | None,
+        follow_up_text: str | None = None,
+    ) -> ProviderBotCommandResult:
+        payment = payment_payload["payment"]
+        if platform == BotPlatform.TELEGRAM:
+            asset = next(
+                (
+                    row
+                    for row in payment_payload["assets"]
+                    if row["asset_type"] == QrAssetType.PAYMENT_CARD.value
+                ),
+                payment_payload["assets"][0],
+            )
+            filename, _, content = await self.download_asset(
+                provider_slug=provider.slug,
+                api_key=provider.api_key,
+                actor_code=None,
+                asset_code=asset["code"],
+            )
+            texts = [follow_up_text] if follow_up_text else []
+            return ProviderBotCommandResult(
+                texts=texts,
+                photo_bytes=content,
+                photo_filename=filename,
+                photo_caption=self._bot_payment_caption(provider.name, payment),
+                payment_reference=payment["reference"],
+            )
+        payment_text = self._bot_payment_caption(provider.name, payment)
+        if follow_up_text:
+            payment_text = f"{payment_text}\n\n{follow_up_text}"
+        share_url = None
+        if share_to_phone:
+            share_url = self._build_whatsapp_share_link(PhoneNumber(share_to_phone), payment_text)
+        return ProviderBotCommandResult(
+            texts=[payment_text],
+            share_url=share_url,
+            payment_reference=payment["reference"],
+        )
+
+    def _provider_bot_help_message(
+        self,
+        provider: ProviderModel,
+        member: ProviderMemberModel | None,
+    ) -> str:
+        role = ProviderMemberRole(member.role) if member is not None else None
+        return self._bot_welcome_message(provider.name, provider.branding_json, member_role=role)
+
+    def _staff_login_prompt(self) -> str:
+        return "This command is for linked provider staff. Use /login <actor_code> <api_key>."
+
+    def _format_bot_public_handle(
+        self,
+        platform: BotPlatform,
+        public_handle: str | None,
+    ) -> str | None:
+        if not public_handle:
+            return None
+        normalized = public_handle.strip()
+        if normalized.startswith("http"):
+            return normalized
+        if platform == BotPlatform.TELEGRAM:
+            if normalized.startswith("t.me/"):
+                return f"https://{normalized}"
+            return f"https://t.me/{normalized.lstrip('@')}"
+        if normalized.startswith(("wa.me/", "api.whatsapp.com/")):
+            return f"https://{normalized}"
+        if platform == BotPlatform.WHATSAPP:
+            return f"https://wa.me/{normalized.lstrip('+')}"
+        return normalized
+
+    def _dashboard_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        dashboard = payload["dashboard"]
+        return (
+            f"{provider_name} dashboard\n\n"
+            f"Clients: {dashboard['total_clients']}\n"
+            f"Pending payments: {dashboard['pending_payments']}\n"
+            f"Paid payments: {dashboard['paid_payments']}\n"
+            f"Overdue payments: {dashboard['overdue_payments']}\n"
+            f"Templates: {dashboard['total_templates']}\n"
+            f"Bots: {dashboard['total_bot_instances']}\n"
+            f"Scheduled reminders: {dashboard['scheduled_reminders']}"
+        )
+
+    def _clients_message(self, provider_name: str, rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return f"{provider_name} clients\n\nNo clients are saved yet."
+        preview = rows[:10]
+        lines = [f"{provider_name} clients\n"]
+        for row in preview:
+            lines.append(
+                f"\n{row['code']} - {row['full_name']} ({row['onboarding_source']})"
+            )
+        if len(rows) > len(preview):
+            lines.append(f"\n\nShowing {len(preview)} of {len(rows)} clients.")
+        return "".join(lines)
+
+    def _client_payments_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        client = payload["client"]
+        payments = payload["payments"]
+        if not payments:
+            return (
+                f"{provider_name} payments\n\n"
+                f"{client['full_name']} ({client['code']}) has no payments yet."
+            )
+        lines = [f"{provider_name} payments\n\n{client['full_name']} ({client['code']})\n"]
+        for payment in payments[:10]:
+            lines.append(
+                f"\n{payment['reference']} - Rs {payment['amount']} - {payment['status']}"
+            )
+        if len(payments) > 10:
+            lines.append(f"\n\nShowing 10 of {len(payments)} payments.")
+        return "".join(lines)
+
+    def _payment_history_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        payment = payload["payment"]
+        notes = payload["notes"][-3:]
+        logs = payload["logs"][-5:]
+        lines = [
+            f"{provider_name} payment history\n\n"
+            f"Reference: {payment['reference']}\n"
+            f"Amount: Rs {payment['amount']}\n"
+            f"Status: {payment['status']}"
+        ]
+        if notes:
+            lines.append("\n\nNotes:")
+            for note in notes:
+                lines.append(f"\n- {note['created_by']}: {note['note']}")
+        if logs:
+            lines.append("\n\nRecent events:")
+            for log in logs:
+                lines.append(f"\n- {log['event_type']}: {log['message']}")
+        return "".join(lines)
+
+    def _share_result_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        message = (
+            f"{provider_name} payment share\n\n"
+            f"Reference: {payload['payment_reference']}\n"
+            f"Channel: {payload['channel']}\n"
+            f"State: {payload['delivery_state']}\n"
+            f"Recipient: {payload['recipient']}"
+        )
+        if payload.get("share_url"):
+            message += f"\nShare URL: {payload['share_url']}"
+        return message
+
+    def _payment_status_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        return (
+            f"{provider_name} payment updated\n\n"
+            f"Reference: {payload['reference']}\n"
+            f"Status: {payload['status']}\n"
+            f"Notes: {payload['notes_summary'] or '-'}"
+        )
+
+    def _payment_note_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        return (
+            f"{provider_name} payment note saved\n\n"
+            f"Reference: {payload['payment_reference']}\n"
+            f"Note: {payload['note']}"
+        )
+
+    def _reminder_message(self, provider_name: str, payload: dict[str, Any]) -> str:
+        message = (
+            f"{provider_name} reminder\n\n"
+            f"Code: {payload['code']}\n"
+            f"Status: {payload['status']}\n"
+            f"Channel: {payload['channel']}"
+        )
+        if payload.get("scheduled_for"):
+            message += f"\nScheduled for: {payload['scheduled_for']}"
+        if payload.get("delivery_state"):
+            message += f"\nDelivery: {payload['delivery_state']}"
+        if payload.get("recipient"):
+            message += f"\nRecipient: {payload['recipient']}"
+        if payload.get("share_url"):
+            message += f"\nShare URL: {payload['share_url']}"
+        return message
 
     async def _authorize(
         self,
@@ -1927,7 +2561,7 @@ class ControlPlaneService:
         client: ClientModel | None,
         actor_code: str,
         now: datetime,
-    ) -> None:
+    ) -> OutboundDispatchResult:
         asset = (
             await self._preferred_payment_asset(session, payment.id)
             if payment and reminder.include_qr
@@ -1988,6 +2622,7 @@ class ControlPlaneService:
                 },
                 now=now,
             )
+        return dispatch
 
     async def _load_active_bot(
         self,
@@ -2202,8 +2837,18 @@ class ControlPlaneService:
         client = TelegramBotClient(bot_token=bot_token, http_client=self._http_client)
         await client.send_photo(chat_id, content, filename=filename, caption=caption)
 
-    def _bot_welcome_message(self, provider_name: str, branding: dict[str, str] | None) -> str:
-        return self._messages.build_bot_welcome_message(provider_name, branding)
+    def _bot_welcome_message(
+        self,
+        provider_name: str,
+        branding: dict[str, str] | None,
+        *,
+        member_role: ProviderMemberRole | None = None,
+    ) -> str:
+        return self._messages.build_bot_welcome_message(
+            provider_name,
+            branding,
+            member_role=member_role,
+        )
 
     def _bot_payment_caption(self, provider_name: str, payment: dict[str, Any]) -> str:
         return self._messages.build_bot_payment_caption(provider_name, payment)

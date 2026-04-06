@@ -51,6 +51,32 @@ class SQLAlchemyProviderControlRepository:
             )
         )
 
+    async def get_active_member_by_telegram_id(
+        self,
+        provider_id: UUID,
+        telegram_id: int,
+    ) -> ProviderMemberModel | None:
+        return await self._session.scalar(
+            select(ProviderMemberModel).where(
+                ProviderMemberModel.provider_id == provider_id,
+                ProviderMemberModel.telegram_id == telegram_id,
+                ProviderMemberModel.is_active.is_(True),
+            )
+        )
+
+    async def get_active_member_by_whatsapp_number(
+        self,
+        provider_id: UUID,
+        whatsapp_number: str,
+    ) -> ProviderMemberModel | None:
+        return await self._session.scalar(
+            select(ProviderMemberModel).where(
+                ProviderMemberModel.provider_id == provider_id,
+                ProviderMemberModel.whatsapp_number == whatsapp_number,
+                ProviderMemberModel.is_active.is_(True),
+            )
+        )
+
     async def clear_default_destinations(self, provider_id: UUID) -> None:
         rows = (
             await self._session.scalars(

@@ -472,11 +472,29 @@ These cover:
 
 Supported bot commands:
 
+- `/login <actor_code> <api_key>`
+- `/whoami`
+- `/onboardlink`
 - `/item-code <code> [amount]`
 - `/pay <amount> <description>`
+- `/dashboard`
+- `/clients`
+- `/payments <client_code>`
+- `/history <payment_reference>`
+- `/charge <client_code> <amount> <description>`
+- `/share <payment_reference> [telegram|whatsapp]`
+- `/status <payment_reference> <pending|paid|overdue> [notes]`
+- `/note <payment_reference> <note>`
+- `/remind <payment_reference> <message>`
+- `/remindat <payment_reference> <iso_datetime> <message>`
+- `/runreminders`
+- `/memberadd <actor_code> <owner|manager|operator|viewer> <display_name>`
 
 What the Telegram bot does:
 
+- links provider team members to Telegram identities for RBAC-aware commands
+- gives viewer/operator/manager/owner menus after login
+- exposes the configured public bot link through `/onboardlink`
 - creates or updates the client automatically
 - resolves or creates payment requests
 - downloads the best asset
@@ -486,8 +504,12 @@ What the Telegram bot does:
 
 Current behavior:
 
+- supports `/login <actor_code> <api_key>` for provider staff
+- supports `/whoami`, `/onboardlink`, `/dashboard`, `/clients`, `/payments`, and `/history`
+- supports `/charge`, `/share`, `/status`, `/note`, `/remind`, and `/runreminders` for linked staff
 - creates or updates the client automatically
 - supports `/item-code <code> [amount]`
+- supports `/pay <amount> <description>`
 - returns payment text plus a `wa.me` share URL
 
 Important limitation:

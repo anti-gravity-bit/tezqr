@@ -6,11 +6,42 @@ The codebase now also includes a provider control plane for white-label payment 
 
 ## Core Commands
 
+Legacy TezQR owner and merchant bot:
+
 - `/start`
 - `/setupi <vpa_id>`
 - `/pay <amount> <desc>`
 - `/stats` admin only
 - `/upgrade <target_telegram_id>` admin only
+
+Provider bot public/client commands:
+
+- `/start`
+- `/item-code <code> [amount]`
+- `/pay <amount> <desc>`
+
+Provider bot staff commands after `/login <actor_code> <api_key>`:
+
+- `/whoami`
+- `/onboardlink`
+- `/dashboard`
+- `/clients`
+- `/payments <client_code>`
+- `/history <payment_reference>`
+
+Operator and above:
+
+- `/charge <client_code> <amount> <description>`
+- `/share <payment_reference> [telegram|whatsapp]`
+- `/status <payment_reference> <pending|paid|overdue> [notes]`
+- `/note <payment_reference> <note>`
+- `/remind <payment_reference> <message>`
+- `/remindat <payment_reference> <iso_datetime> <message>`
+- `/runreminders`
+
+Manager and owner:
+
+- `/memberadd <actor_code> <owner|manager|operator|viewer> <display_name>`
 
 ## Local Development
 
