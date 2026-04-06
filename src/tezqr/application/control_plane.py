@@ -1422,6 +1422,7 @@ class ControlPlaneService:
             bot_instance = await self._load_active_bot(
                 session, webhook_secret, BotPlatform.TELEGRAM
             )
+            bot_token = bot_instance.bot_token
             provider = await self._repository(session).get_provider_by_id(bot_instance.provider_id)
             if provider is None:
                 raise DomainValidationError("Provider bot is not linked to a provider.")
@@ -1447,14 +1448,14 @@ class ControlPlaneService:
 
             if result.photo_bytes and result.photo_filename and result.photo_caption:
                 await self._send_provider_bot_photo(
-                    bot_instance.bot_token,
+                    bot_token,
                     message.chat_id,
                     result.photo_bytes,
                     filename=result.photo_filename,
                     caption=result.photo_caption,
                 )
             for text in result.texts:
-                await self._send_provider_bot_text(bot_instance.bot_token, message.chat_id, text)
+                await self._send_provider_bot_text(bot_token, message.chat_id, text)
 
     async def handle_provider_whatsapp_message(
         self,
